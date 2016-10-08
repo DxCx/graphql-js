@@ -615,7 +615,7 @@ function observableForObject<T>(
     (...values) => values.reduce((resolvedObject, value, i) => {
       resolvedObject[keys[i]] = value;
       return resolvedObject;
-    }, Object.create({}))
+    }, Object.create(null))
   );
 }
 
