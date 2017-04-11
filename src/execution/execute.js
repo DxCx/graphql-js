@@ -805,8 +805,10 @@ function completeValueCatchingError(
       path,
       result
     );
-    if ( getPromise(completed) || getObservable(completed) ) {
-      return toObservable(completed).catch(error => {
+
+    const obs = getObservable(completed);
+    if ( obs ) {
+      return obs.catch(error => {
         // If `completeValueWithLocatedError` returned a rejected promise, log
         // the rejection error and resolve to null.
         // Note: we don't rely on a `catch` method, but we do expect "thenable"
@@ -843,8 +845,9 @@ function completeValueWithLocatedError(
       path,
       result
     );
-    if (getPromise(completed) || getObservable(completed)) {
-      return toObservable(completed).catch(
+    const obs = getObservable(completed);
+    if (obs) {
+      return obs.catch(
         error => Observable.throw(
 			locatedError(error, fieldNodes, responsePathAsArray(path)))
       );
@@ -1017,10 +1020,10 @@ function completeListValue(
       item
     );
 
-    if (!containsObservable &&
-        (getPromise(completedItem) || getObservable(completedItem))) {
+    const obs = getObservable(completedItem);
+    if (obs) {
       containsObservable = true;
-      completedItem = toObservable(completedItem);
+      completedItem = obs;
     }
     completedResults.push(completedItem);
   });
@@ -1063,10 +1066,11 @@ function completeAbstractValue(
     returnType.resolveType(result, exeContext.contextValue, info) :
     defaultResolveTypeFn(result, exeContext.contextValue, info, returnType);
 
+  // GQL-RxJs: No Reason to support observable from resolveType..
   const promise = getPromise(runtimeType);
   if (promise) {
-    return promise.then(resolvedRuntimeType =>
-      completeObjectValue(
+    return toObservable(promise)
+      .map(resolvedRuntimeType => completeObjectValue(
         exeContext,
         ensureValidRuntimeType(
           resolvedRuntimeType,
@@ -1081,7 +1085,8 @@ function completeAbstractValue(
         path,
         result
       )
-    );
+    )
+    .switchMap(value => toObservable(value));
   }
 
   return completeObjectValue(
@@ -1150,9 +1155,10 @@ function completeObjectValue(
   if (returnType.isTypeOf) {
     const isTypeOf = returnType.isTypeOf(result, exeContext.contextValue, info);
 
+    // GQL-RxJs: No Reason to support observable from isTypeOf..
     const promise = getPromise(isTypeOf);
     if (promise) {
-      return promise.then(isTypeOfResult => {
+      return toObservable(promise).map(isTypeOfResult => {
         if (!isTypeOfResult) {
           throw invalidReturnTypeError(returnType, result, fieldNodes);
         }
@@ -1164,7 +1170,8 @@ function completeObjectValue(
           path,
           result
         );
-      });
+      })
+      .switchMap(value => toObservable(value));
     }
 
     if (!isTypeOf) {
@@ -1240,6 +1247,8 @@ function defaultResolveTypeFn(
     if (type.isTypeOf) {
       const isTypeOfResult = type.isTypeOf(value, context, info);
 
+      // GQL-RxJs: Will no need to handle the promise here because
+      // it is handled in completeAbstractValue.
       const promise = getPromise(isTypeOfResult);
       if (promise) {
         promisedIsTypeOfResults[i] = promise;
