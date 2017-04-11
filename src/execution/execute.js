@@ -406,11 +406,22 @@ function executeFields(
       if (result === undefined) {
         return results;
       }
-      results[responseName] = result;
-      if (getPromise(result) || getObservable(result)) {
+
+      if ( getObservable(result) ) {
         containsObservable = true;
         result = toObservable(result);
+
+        // GQL-RxJs: if observable is returned, make sure it won't be reactive
+        // for query and mutation.
+        // NOTE: in the future, this can be modified to
+        // support reactive directives.
+        if ( (exeContext.operation.operation === 'query') ||
+             (exeContext.operation.operation === 'mutation') ) {
+          result = result.take(1);
+        }
       }
+
+      results[responseName] = result;
       return results;
     },
     Object.create(null)
@@ -719,18 +730,6 @@ function resolveField(
   // if promise is returned, convert to observable.
   if ( getPromise(result) ) {
     result = toObservable(result);
-  }
-
-  // if observable is returned, make sure it won't be reactive
-  // for query and mutation.
-  // NOTE: in the future, this can be modified to
-  // support reactive directives.
-  const obs = getObservable(result);
-  if (obs) {
-    if ( (info.operation.operation === 'query') ||
-         (info.operation.operation === 'mutation') ) {
-      result = obs.take(1);
-    }
   }
 
   return completeValueCatchingError(
