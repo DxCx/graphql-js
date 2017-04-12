@@ -359,7 +359,7 @@ function executeFieldsSerially(
     responseName: string) => prevObs.switchMap(results => {
       const fieldNodes = fields[responseName];
       const fieldPath = addPath(path, responseName);
-      let result = resolveField(
+      const result = resolveField(
         exeContext,
         parentType,
         sourceValue,
@@ -368,18 +368,6 @@ function executeFieldsSerially(
       );
       if (result === undefined) {
         return Observable.of(results);
-      }
-
-      const obs = toObservable(result);
-      if ( obs ) {
-        // GQL-RxJs: if observable is returned, make sure it won't be reactive
-        // for query and mutation.
-        // NOTE: in the future, this can be modified to
-        // support reactive directives.
-        if ( (exeContext.operation.operation === 'query') ||
-             (exeContext.operation.operation === 'mutation') ) {
-          result = obs.take(1);
-        }
       }
 
       return toObservable(result).map(resolvedResult => {
@@ -422,15 +410,7 @@ function executeFields(
       const obs = toObservable(result);
       if ( obs ) {
         containsObservable = true;
-
-        // GQL-RxJs: if observable is returned, make sure it won't be reactive
-        // for query and mutation.
-        // NOTE: in the future, this can be modified to
-        // support reactive directives.
-        if ( (exeContext.operation.operation === 'query') ||
-             (exeContext.operation.operation === 'mutation') ) {
-          result = obs.take(1);
-        }
+        result = obs;
       }
 
       results[responseName] = result;
@@ -901,7 +881,18 @@ function completeValue(
 ): mixed {
   // If result is Observable (or promise that will become one), apply lift
   if (getPromise(result) || getObservable(result)) {
-    return toObservable(result).map(
+
+    let obs = toObservable(result);
+    // GQL-RxJs: if observable is returned, make sure it won't be reactive
+    // for query and mutation.
+    // NOTE: in the future, this can be modified to
+    // support reactive directives.
+    if ( (exeContext.operation.operation === 'query') ||
+      (exeContext.operation.operation === 'mutation') ) {
+      obs = obs.take(1);
+    }
+
+    return obs.map(
       resolved => completeValue(
         exeContext,
         returnType,
