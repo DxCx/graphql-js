@@ -359,7 +359,7 @@ function executeFieldsSerially(
     responseName: string) => prevObs.switchMap(results => {
       const fieldNodes = fields[responseName];
       const fieldPath = addPath(path, responseName);
-      const result = resolveField(
+      let result = resolveField(
         exeContext,
         parentType,
         sourceValue,
@@ -368,6 +368,18 @@ function executeFieldsSerially(
       );
       if (result === undefined) {
         return Observable.of(results);
+      }
+
+      const obs = toObservable(result);
+      if ( obs ) {
+        // GQL-RxJs: if observable is returned, make sure it won't be reactive
+        // for query and mutation.
+        // NOTE: in the future, this can be modified to
+        // support reactive directives.
+        if ( (exeContext.operation.operation === 'query') ||
+             (exeContext.operation.operation === 'mutation') ) {
+          result = obs.take(1);
+        }
       }
 
       return toObservable(result).map(resolvedResult => {
@@ -407,9 +419,9 @@ function executeFields(
         return results;
       }
 
-      if ( getObservable(result) ) {
+      const obs = toObservable(result);
+      if ( obs ) {
         containsObservable = true;
-        result = toObservable(result);
 
         // GQL-RxJs: if observable is returned, make sure it won't be reactive
         // for query and mutation.
@@ -417,7 +429,7 @@ function executeFields(
         // support reactive directives.
         if ( (exeContext.operation.operation === 'query') ||
              (exeContext.operation.operation === 'mutation') ) {
-          result = result.take(1);
+          result = obs.take(1);
         }
       }
 
