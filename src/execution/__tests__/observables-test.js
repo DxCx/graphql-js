@@ -78,4 +78,70 @@ describe('Execute: Handles Observables from resolvers', () => {
     });
   });
 
+  it('supports Observable fields resolve', () => {
+    const doc = 'query Example { a { firstName counter } }';
+    const data = { a: { firstName: 'test', counter: Observable.interval(5) } };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'Type',
+        fields: {
+          a: { type: new GraphQLObjectType({
+            name: 'User',
+            fields: {
+              firstName: { type: GraphQLString },
+              counter: { type: GraphQLString },
+            }
+          })},
+        }
+      })
+    });
+
+    return executeReactive(schema, parse(doc), data).take(2).map(result => {
+      expect(result).to.deep.equal({
+        data: { a: { firstName: 'test', counter: '0' } },
+      });
+    }).toPromise();
+  });
+
+  it('supports Observable fields resolve for subscriptions as well', () => {
+    const doc = 'subscription Example { a { firstName counter } }';
+    const data = { a: { firstName: 'test', counter: Observable.interval(5) } };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          b: { type: GraphQLString },
+        }
+      }),
+
+      subscription: new GraphQLObjectType({
+        name: 'SubscriptionType',
+        fields: {
+          a: { type: new GraphQLObjectType({
+            name: 'User',
+            fields: {
+              firstName: { type: GraphQLString },
+              counter: { type: GraphQLString },
+            }
+          })},
+        }
+      })
+    });
+    let counter = 0;
+
+    return executeReactive(schema, parse(doc), data).take(5).do(result => {
+      expect(result).to.deep.equal({
+        data: { a: { firstName: 'test', counter: counter.toString() } },
+      });
+      counter++;
+    }).toPromise().then(fresult => {
+      // Subscription should return 5 values ( 0...4 ) because of take(5).
+      // counter should be equal to 5 since
+      // it's being incremeanted after the last expect.
+      expect(fresult).to.deep.equal({
+        data: { a: { firstName: 'test', counter: '4' } },
+      });
+      expect(counter).to.be.equal(5);
+    });
+  });
 });
