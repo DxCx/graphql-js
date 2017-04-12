@@ -850,6 +850,36 @@ function completeValueWithLocatedError(
   }
 }
 
+// GQL-RxJs: TemporaryName
+// This function will apply directives over values before complation.
+function handleReactiveDirective<T>(
+  exeContext: ExecutionContext,
+  directives: ?Array<DirectiveNode>,
+  info: GraphQLResolveInfo,
+  path: ResponsePath,
+  result: Observable<T> | Promise<T> | T,
+): Observable<T> | void {
+  const promise = getPromise(result);
+  let obs = (promise && toObservable(promise)) || getObservable(result);
+
+  // GQL-RxJs: We won't support deferring just resolved values,
+  // at least not right from day 0.
+  if (!obs) {
+    return;
+  }
+
+  // GQL-RxJs: if observable is returned, make sure it won't be reactive
+  // for query and mutation.
+  // NOTE: in the future, this can be modified to
+  // support reactive directives.
+  if ( (exeContext.operation.operation === 'query') ||
+    (exeContext.operation.operation === 'mutation') ) {
+    obs = obs.take(1);
+  }
+
+  return obs;
+}
+
 /**
  * Implements the instructions for completeValue as defined in the
  * "Field entries" section of the spec.
@@ -879,19 +909,17 @@ function completeValue(
   path: ResponsePath,
   result: mixed
 ): mixed {
-  // If result is Observable (or promise that will become one), apply lift
-  if (getPromise(result) || getObservable(result)) {
 
-    let obs = toObservable(result);
-    // GQL-RxJs: if observable is returned, make sure it won't be reactive
-    // for query and mutation.
-    // NOTE: in the future, this can be modified to
-    // support reactive directives.
-    if ( (exeContext.operation.operation === 'query') ||
-      (exeContext.operation.operation === 'mutation') ) {
-      obs = obs.take(1);
-    }
+  const obs = handleReactiveDirective(
+    exeContext,
+    fieldNodes[0].directives,
+    info,
+    path,
+    result,
+  );
 
+  // If result is Observable
+  if (obs) {
     return obs.map(
       resolved => completeValue(
         exeContext,
