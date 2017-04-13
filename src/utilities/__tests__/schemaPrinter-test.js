@@ -640,6 +640,9 @@ directive @deprecated(
   reason: String = "No longer supported"
 ) on FIELD_DEFINITION | ENUM_VALUE
 
+# Returns initial value as null and update value when available
+directive @defer on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+
 # A Directive provides a way to describe alternate runtime execution and type validation behavior in a GraphQL document.
 #
 # In some cases, you need to provide options to alter GraphQL's execution behavior

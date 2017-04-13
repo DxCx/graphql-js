@@ -173,7 +173,7 @@ export const GraphQLDeprecatedDirective = new GraphQLDirective({
  */
 export const GraphQLDeferDirective = new GraphQLDirective({
   name: 'defer',
-  description: 'returns initial value as null and update value when available',
+  description: 'Returns initial value as null and update value when available',
   locations: [
     DirectiveLocation.FIELD,
     DirectiveLocation.FRAGMENT_SPREAD,
