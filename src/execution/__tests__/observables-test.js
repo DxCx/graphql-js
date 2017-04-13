@@ -203,4 +203,89 @@ describe('Execute: Supports reactive directives', () => {
       });
     });
   });
+
+  it('does not terminate @live query', () => {
+    const doc = `query Example {
+      a {
+        firstName
+        counter @live
+      }
+    }`;
+    const data = { a: { firstName: 'test', counter: Observable.interval(5) } };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          a: { type: new GraphQLObjectType({
+            name: 'User',
+            fields: {
+              firstName: { type: GraphQLString },
+              counter: { type: GraphQLString },
+            }
+          })},
+        }
+      }),
+    });
+    let counter = 0;
+
+    return executeReactive(schema, parse(doc), data).take(5).do(result => {
+      expect(result).to.deep.equal({
+        data: { a: { firstName: 'test', counter: counter.toString() } },
+      });
+      counter++;
+    }).toPromise().then(fresult => {
+      // Subscription should return 5 values ( 0...4 ) because of take(5).
+      // counter should be equal to 5 since
+      // it's being incremeanted after the last expect.
+      expect(fresult).to.deep.equal({
+        data: { a: { firstName: 'test', counter: '4' } },
+      });
+      expect(counter).to.be.equal(5);
+    });
+  });
+
+  it('@live works on sub-observable', () => {
+    const doc = `query Example {
+      a {
+        firstName
+        counter @live
+      }
+    }`;
+    const data = {
+      a: Observable.interval(5).map(
+        c => ({ firstName: 'test', counter: c })
+      )
+    };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          a: { type: new GraphQLObjectType({
+            name: 'User',
+            fields: {
+              firstName: { type: GraphQLString },
+              counter: { type: GraphQLString },
+            }
+          })},
+        }
+      }),
+    });
+    let counter = 0;
+
+    return executeReactive(schema, parse(doc), data).take(5).do(result => {
+      expect(result).to.deep.equal({
+        data: { a: { firstName: 'test', counter: counter.toString() } },
+      });
+      counter++;
+    }).toPromise().then(fresult => {
+      // Subscription should return 5 values ( 0...4 ) because of take(5).
+      // counter should be equal to 5 since
+      // it's being incremeanted after the last expect.
+      expect(fresult).to.deep.equal({
+        data: { a: { firstName: 'test', counter: '4' } },
+      });
+      expect(counter).to.be.equal(5);
+    });
+  });
+
 });
