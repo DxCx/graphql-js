@@ -46,6 +46,7 @@ import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
   GraphQLDeferDirective,
+  GraphQLLiveDirective,
 } from '../type/directives';
 import type {
   DirectiveNode,
