@@ -169,10 +169,26 @@ export const GraphQLDeprecatedDirective = new GraphQLDirective({
 });
 
 /**
+ * Used to defer field or fragment resolve value.
+ */
+export const GraphQLDeferDirective = new GraphQLDirective({
+  name: 'defer',
+  description: 'returns initial value as null and update value when available',
+  locations: [
+    DirectiveLocation.FIELD,
+    DirectiveLocation.FRAGMENT_SPREAD,
+    DirectiveLocation.INLINE_FRAGMENT,
+  ],
+});
+
+/**
  * The full list of specified directives.
  */
 export const specifiedDirectives: Array<GraphQLDirective> = [
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
   GraphQLDeprecatedDirective,
+
+  // GQL-RxJs: Reactive Directives
+  GraphQLDeferDirective,
 ];

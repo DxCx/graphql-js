@@ -6,6 +6,7 @@ import {
   GraphQLSchema,
   GraphQLObjectType,
   GraphQLString,
+  GraphQLInt,
 } from '../../type';
 import {
   Observable
@@ -142,6 +143,64 @@ describe('Execute: Handles Observables from resolvers', () => {
         data: { a: { firstName: 'test', counter: '4' } },
       });
       expect(counter).to.be.equal(5);
+    });
+  });
+});
+
+describe('Execute: Supports reactive directives', () => {
+  it('@defer works', () => {
+    const doc = `query Example {
+      counter @defer
+    }`;
+    const data = { counter: Observable.of(1).delay(100) };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          counter: { type: GraphQLInt }
+        },
+      }),
+    });
+    let counter = null;
+
+    return executeReactive(schema, parse(doc), data).do(result => {
+      expect(result).to.deep.equal({
+        data: { counter },
+      });
+      counter = 1;
+    }).toPromise().then(fresult => {
+      // makes sure final is correct.
+      expect(fresult).to.deep.equal({
+        data: { counter: 1 },
+      });
+    });
+  });
+
+  it('@defer doesn\'t apply twice', () => {
+    const doc = `query Example {
+      counter @defer @defer
+    }`;
+    const data = { counter: Observable.of(1).delay(100) };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          counter: { type: GraphQLInt }
+        },
+      }),
+    });
+    let counter = null;
+
+    return executeReactive(schema, parse(doc), data).do(result => {
+      expect(result).to.deep.equal({
+        data: { counter },
+      });
+      counter = 1;
+    }).toPromise().then(fresult => {
+      // makes sure final is correct.
+      expect(fresult).to.deep.equal({
+        data: { counter: 1 },
+      });
     });
   });
 });

@@ -45,6 +45,7 @@ import {
 import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
+  GraphQLDeferDirective,
 } from '../type/directives';
 import type {
   DirectiveNode,
@@ -1250,6 +1251,19 @@ function getFieldDef(
   return parentType.getFields()[fieldName];
 }
 
+function handleDeferDirective<T>(
+  exeContext: ExecutionContext,
+  directives: Array<DirectiveNode>,
+  info: GraphQLResolveInfo,
+  path: ResponsePath,
+  result: Observable<T>,
+): Observable<T> {
+  const isDeffered = directives
+    .filter(d => d.name.value === GraphQLDeferDirective.name)
+    .length > 0;
+  return isDeffered ? result.startWith(null) : result;
+}
+
 // GQL-RxJs: TemporaryName
 // This function will apply directives over values before complation.
 function handleReactiveDirective<T>(
@@ -1262,6 +1276,8 @@ function handleReactiveDirective<T>(
   const promise = getPromise(result);
   let obs = (promise && toObservable(promise)) || getObservable(result);
 
+  // TODO: Stream requires observable? not sure...
+
   // GQL-RxJs: We won't support deferring just resolved values,
   // at least not right from day 0.
   if (!obs) {
@@ -1273,9 +1289,15 @@ function handleReactiveDirective<T>(
   // NOTE: in the future, this can be modified to
   // support reactive directives.
   if ( (exeContext.operation.operation === 'query') ||
-    (exeContext.operation.operation === 'mutation') ) {
+       (exeContext.operation.operation === 'mutation') ) {
     obs = obs.take(1);
   }
+
+  if ( !directives ) {
+    return obs;
+  }
+
+  obs = handleDeferDirective(exeContext, directives, info, path, obs);
 
   return obs;
 }
