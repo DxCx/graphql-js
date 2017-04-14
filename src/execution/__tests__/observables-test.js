@@ -288,4 +288,48 @@ describe('Execute: Supports reactive directives', () => {
     });
   });
 
+  it('@live works on sub-observable only if used', () => {
+    const doc = `query Example {
+      a {
+        counter2 @live
+        counter
+      }
+    }`;
+    const data = {
+      a: Observable.interval(5).map(
+        c => ({ counter2: c, counter: c })
+      )
+    };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          a: { type: new GraphQLObjectType({
+            name: 'User',
+            fields: {
+              counter2: { type: GraphQLString },
+              counter: { type: GraphQLString },
+            }
+          })},
+        }
+      }),
+    });
+    let counter = 0;
+
+    return executeReactive(schema, parse(doc), data).take(5).do(result => {
+      expect(result).to.deep.equal({
+        data: { a: { counter2: counter.toString(), counter: '0' } },
+      });
+      counter++;
+    }).toPromise().then(fresult => {
+      // Subscription should return 5 values ( 0...4 ) because of take(5).
+      // counter should be equal to 5 since
+      // it's being incremeanted after the last expect.
+      expect(fresult).to.deep.equal({
+        data: { a: { counter2: '4', counter: '0' } },
+      });
+      expect(counter).to.be.equal(5);
+    });
+  });
+
 });

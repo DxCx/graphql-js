@@ -45,6 +45,7 @@ import {
 import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
+  // GQL-RxJs: Reactive Directives
   GraphQLDeferDirective,
   GraphQLLiveDirective,
 } from '../type/directives';
@@ -97,6 +98,9 @@ type ExecutionContext = {
   operation: OperationDefinitionNode;
   variableValues: {[key: string]: mixed};
   errors: Array<GraphQLError>;
+
+  // GQL-RxJs: used to store static results on @live request
+  liveCache: {[key: string]: mixed};
 };
 
 /**
@@ -282,6 +286,7 @@ function buildExecutionContext(
     contextValue,
     operation,
     variableValues,
+    liveCache: {},
     errors
   };
 }
@@ -636,7 +641,7 @@ function resolveField(
 
   // Get the resolve function, regardless of if its result is normal
   // or abrupt (error).
-  let result = resolveOrError(
+  const result = resolveWithLive(
     exeContext,
     fieldDef,
     fieldNode,
@@ -645,11 +650,6 @@ function resolveField(
     context,
     info
   );
-
-  // if promise is returned, convert to observable.
-  if ( getPromise(result) ) {
-    result = toObservable(result);
-  }
 
   return completeValueCatchingError(
     exeContext,
@@ -777,7 +777,6 @@ function completeValueWithLocatedError(
   }
 }
 
->>>>>>> 48b9960... chore(reactive-directives): @live partialy works, still WIP
 /**
  * Implements the instructions for completeValue as defined in the
  * "Field entries" section of the spec.
@@ -1254,6 +1253,49 @@ function getFieldDef(
   return parentType.getFields()[fieldName];
 }
 
+function resolveWithLive<TSource, TContext>(
+  exeContext: ExecutionContext,
+  fieldDef: GraphQLField<TSource, TContext>,
+  fieldNode: FieldNode,
+  resolveFn: GraphQLFieldResolver<TSource, TContext>,
+  source: TSource,
+  context: TContext,
+  info: GraphQLResolveInfo
+): Error | mixed {
+  const path = responsePathAsArray(info.path).join('.');
+
+  if ( exeContext.liveCache.hasOwnProperty(path) ) {
+    return exeContext.liveCache[path];
+  }
+
+  let result = resolveOrError(
+    exeContext,
+    fieldDef,
+    fieldNode,
+    resolveFn,
+    source,
+    context,
+    info
+  );
+
+  // if promise is returned, convert to observable.
+  if ( getPromise(result) ) {
+    result = toObservable(result);
+  }
+
+  // store result for live if possible
+
+  // no need to store result if we are running subscription
+  // or the node isn't possibly live till the end.
+  if ( exeContext.operation.operation === 'subscription' ||
+       hasLiveDirective(fieldNode.directives) ) {
+    return result;
+  }
+
+  exeContext.liveCache[path] = result;
+  return result;
+}
+
 function handleDeferDirective<T>(
   exeContext: ExecutionContext,
   directives: Array<DirectiveNode>,
@@ -1321,13 +1363,9 @@ function selectionPossiblyHasLive(
     return false;
   }
 
-  for (let i = 0; i < selectionSet.selections.length; i++) {
-    if ( selectionPossiblyHasLive(exeContext, selectionSet.selections[i]) ) {
-      return true;
-    }
-  }
-
-  return false;
+  return selectionSet.selections.some(curSelection => {
+    return selectionPossiblyHasLive(exeContext, curSelection);
+  });
 }
 
 function handleLiveDirective<T>(
