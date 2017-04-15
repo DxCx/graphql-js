@@ -169,41 +169,10 @@ export const GraphQLDeprecatedDirective = new GraphQLDirective({
 });
 
 /**
- * Used to defer field or fragment resolve value.
- */
-export const GraphQLDeferDirective = new GraphQLDirective({
-  name: 'defer',
-  description: 'Returns initial value as null and update value when available',
-  locations: [
-    DirectiveLocation.FIELD,
-    DirectiveLocation.FRAGMENT_SPREAD,
-    DirectiveLocation.INLINE_FRAGMENT,
-  ],
-});
-
-/**
- * Used to request selected field or fragment as with live updates.
- */
-export const GraphQLLiveDirective = new GraphQLDirective({
-  name: 'live',
-  description: 'Directs the executor to keep field or fragment ' +
-               'as live observable',
-  locations: [
-    DirectiveLocation.FIELD,
-    DirectiveLocation.FRAGMENT_SPREAD,
-    DirectiveLocation.INLINE_FRAGMENT,
-  ],
-});
-
-/**
  * The full list of specified directives.
  */
 export const specifiedDirectives: Array<GraphQLDirective> = [
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
   GraphQLDeprecatedDirective,
-
-  // GQL-RxJs: Reactive Directives
-  GraphQLDeferDirective,
-  GraphQLLiveDirective
 ];

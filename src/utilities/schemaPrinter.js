@@ -39,9 +39,7 @@ function isSpecDirective(directiveName: string): boolean {
   return (
     directiveName === 'skip' ||
     directiveName === 'include' ||
-    directiveName === 'deprecated' ||
-    directiveName === 'live' ||
-    directiveName === 'defer'
+    directiveName === 'deprecated'
   );
 }
 
