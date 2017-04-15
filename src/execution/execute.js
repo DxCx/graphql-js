@@ -101,6 +101,7 @@ type ExecutionContext = {
 
   // GQL-RxJs: used to store static results on @live request
   liveCache: {[key: string]: mixed};
+  liveMap: {[key: string]: boolean};
 };
 
 /**
@@ -287,6 +288,7 @@ function buildExecutionContext(
     operation,
     variableValues,
     liveCache: {},
+    liveMap: {},
     errors
   };
 }
@@ -453,7 +455,11 @@ function collectFields(
   runtimeType: GraphQLObjectType,
   selectionSet: SelectionSetNode,
   fields: {[key: string]: Array<FieldNode>},
-  visitedFragmentNames: {[key: string]: boolean}
+  visitedFragmentNames: {[key: string]: boolean},
+
+  // GQL-RxJs: helper arguments for supporting @live
+  parentPath: ResponsePath,
+  parentLive: ?boolean,
 ): {[key: string]: Array<FieldNode>} {
   for (let i = 0; i < selectionSet.selections.length; i++) {
     const selection = selectionSet.selections[i];
@@ -466,6 +472,14 @@ function collectFields(
         if (!fields[name]) {
           fields[name] = [];
         }
+
+        // GQL-RxJs: append to liveMap
+        const isLive = parentLive || hasLiveDirective(selection.directives);
+        const fieldPath = responsePathAsArray(
+          addPath(parentPath, name),
+        ).join('.');
+        exeContext.liveMap[fieldPath] = isLive;
+
         fields[name].push(selection);
         break;
       case Kind.INLINE_FRAGMENT:
@@ -478,7 +492,11 @@ function collectFields(
           runtimeType,
           selection.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          parentPath,
+          parentLive || hasLiveDirective(selection.directives),
         );
         break;
       case Kind.FRAGMENT_SPREAD:
@@ -498,7 +516,15 @@ function collectFields(
           runtimeType,
           fragment.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          // for Spread fragments it can be either selective @live on the spread
+          // or live fragment on fragment itself.
+          parentPath,
+          parentLive ||
+          hasLiveDirective(selection.directives) ||
+          hasLiveDirective(fragment.directives),
         );
         break;
     }
@@ -1148,7 +1174,8 @@ function collectAndExecuteSubfields(
         returnType,
         selectionSet,
         subFieldNodes,
-        visitedFragmentNames
+        visitedFragmentNames,
+        path,
       );
     }
   }
@@ -1288,12 +1315,13 @@ function resolveWithLive<TSource, TContext>(
 
   // no need to store result if we are running subscription
   // or the node isn't possibly live till the end.
+  // or parent is live itself. (not in liveCache)
   if ( exeContext.operation.operation === 'subscription' ||
-       hasLiveDirective(fieldNode.directives) ) {
+       exeContext.liveMap[path] ) {
     return result;
   }
 
-  const isLive = selectionPossiblyHasLive(exeContext, info.fieldNodes[0]);
+  const isLive = selectionPossiblyHasLive(exeContext, fieldNode);
   const obs = getObservable(result);
   if ( obs && !isLive ) {
     result = obs.take(1);
@@ -1363,6 +1391,9 @@ function selectionPossiblyHasLive(
       const fragment = exeContext.fragments[fragName];
       if (!fragment) {
         return false;
+      }
+      if ( hasLiveDirective(fragment.directives) ) {
+        return true;
       }
 
       selectionSet = fragment.selectionSet;
