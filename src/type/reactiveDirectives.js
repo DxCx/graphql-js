@@ -27,6 +27,7 @@ export const GraphQLLiveDirective = new GraphQLDirective({
     DirectiveLocation.FIELD,
     DirectiveLocation.FRAGMENT_SPREAD,
     DirectiveLocation.INLINE_FRAGMENT,
+    DirectiveLocation.FRAGMENT_DEFINITION,
   ],
 });
 
