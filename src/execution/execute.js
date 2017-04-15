@@ -807,17 +807,12 @@ function completeValue(
   result: mixed
 ): mixed {
 
-  const obs = handleReactiveDirective(
-    exeContext,
-    fieldNodes[0].directives,
-    info,
-    path,
-    result,
-  );
-
-  // If result is Observable
+  // If result is Observable, rescurse in with a result,
+  // while taking care of @defer directive
+  const promise = getPromise(result);
+  const obs = (promise && toObservable(promise)) || getObservable(result);
   if (obs) {
-    return obs.map(
+    const completedObservable = obs.map(
       resolved => completeValue(
         exeContext,
         returnType,
@@ -828,6 +823,12 @@ function completeValue(
       )
     )
     .switchMap(value => toObservable(value));
+
+    return handleDeferDirective(exeContext,
+      fieldNodes[0].directives,
+      info,
+      path,
+      completedObservable);
   }
 
   // If result is an Error, throw a located error.
@@ -1292,17 +1293,28 @@ function resolveWithLive<TSource, TContext>(
     return result;
   }
 
+  const isLive = selectionPossiblyHasLive(exeContext, info.fieldNodes[0]);
+  const obs = getObservable(result);
+  if ( obs && !isLive ) {
+    result = obs.take(1);
+  }
+
   exeContext.liveCache[path] = result;
   return result;
 }
 
 function handleDeferDirective<T>(
   exeContext: ExecutionContext,
-  directives: Array<DirectiveNode>,
+  directives: ?Array<DirectiveNode>,
   info: GraphQLResolveInfo,
   path: ResponsePath,
   result: Observable<T>,
 ): Observable<T> {
+
+  if ( !directives ) {
+    return result;
+  }
+
   const isDeffered = directives
     .some(d => d.name.value === GraphQLDeferDirective.name);
   return isDeffered ? result.startWith(null) : result;
@@ -1366,55 +1378,6 @@ function selectionPossiblyHasLive(
   return selectionSet.selections.some(curSelection => {
     return selectionPossiblyHasLive(exeContext, curSelection);
   });
-}
-
-function handleLiveDirective<T>(
-  exeContext: ExecutionContext,
-  directives: ?Array<DirectiveNode>,
-  info: GraphQLResolveInfo,
-  path: ResponsePath,
-  result: Observable<T>,
-): Observable<T> {
-  // Subscriptions are always live
-  if ( exeContext.operation.operation === 'subscription' ) {
-    return result;
-  }
-
-  const isLive = selectionPossiblyHasLive(exeContext, info.fieldNodes[0]);
-  if ( isLive ) {
-    return result;
-  }
-
-  return result.take(1);
-}
-
-// GQL-RxJs: TemporaryName
-// This function will apply directives over values before complation.
-function handleReactiveDirective<T>(
-  exeContext: ExecutionContext,
-  directives: ?Array<DirectiveNode>,
-  info: GraphQLResolveInfo,
-  path: ResponsePath,
-  result: Observable<T> | Promise<T> | T,
-): Observable<T> | void {
-  const promise = getPromise(result);
-  let obs = (promise && toObservable(promise)) || getObservable(result);
-
-  // TODO: Stream requires observable? not sure...
-
-  // GQL-RxJs: We won't support deferring just resolved values,
-  // at least not right from day 0.
-  if (!obs) {
-    return;
-  }
-
-  obs = handleLiveDirective(exeContext, directives, info, path, obs);
-  if ( !directives ) {
-    return obs;
-  }
-
-  obs = handleDeferDirective(exeContext, directives, info, path, obs);
-  return obs;
 }
 
 /**
