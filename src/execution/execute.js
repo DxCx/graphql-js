@@ -42,12 +42,16 @@ import {
 import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
+  // GQL-RxJs: Reactive Directives
+  GraphQLDeferDirective,
+  GraphQLLiveDirective,
 } from '../type/directives';
 import type {
   DirectiveNode,
   DocumentNode,
   OperationDefinitionNode,
   SelectionSetNode,
+  SelectionNode,
   FieldNode,
   InlineFragmentNode,
   FragmentDefinitionNode,
@@ -91,6 +95,10 @@ type ExecutionContext = {
   operation: OperationDefinitionNode;
   variableValues: {[key: string]: mixed};
   errors: Array<GraphQLError>;
+
+  // GQL-RxJs: used to store static results on @live request
+  liveCache: {[key: string]: mixed};
+  liveMap: {[key: string]: boolean};
 };
 
 /**
@@ -276,6 +284,8 @@ function buildExecutionContext(
     contextValue,
     operation,
     variableValues,
+    liveCache: {},
+    liveMap: {},
     errors
   };
 }
@@ -442,7 +452,11 @@ function collectFields(
   runtimeType: GraphQLObjectType,
   selectionSet: SelectionSetNode,
   fields: {[key: string]: Array<FieldNode>},
-  visitedFragmentNames: {[key: string]: boolean}
+  visitedFragmentNames: {[key: string]: boolean},
+
+  // GQL-RxJs: helper arguments for supporting @live
+  parentPath: ResponsePath,
+  parentLive: ?boolean,
 ): {[key: string]: Array<FieldNode>} {
   for (let i = 0; i < selectionSet.selections.length; i++) {
     const selection = selectionSet.selections[i];
@@ -455,6 +469,14 @@ function collectFields(
         if (!fields[name]) {
           fields[name] = [];
         }
+
+        // GQL-RxJs: append to liveMap
+        const isLive = parentLive || hasLiveDirective(selection.directives);
+        const fieldPath = responsePathAsArray(
+          addPath(parentPath, name),
+        ).join('.');
+        exeContext.liveMap[fieldPath] = isLive;
+
         fields[name].push(selection);
         break;
       case Kind.INLINE_FRAGMENT:
@@ -467,7 +489,11 @@ function collectFields(
           runtimeType,
           selection.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          parentPath,
+          parentLive || hasLiveDirective(selection.directives),
         );
         break;
       case Kind.FRAGMENT_SPREAD:
@@ -487,7 +513,15 @@ function collectFields(
           runtimeType,
           fragment.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          // for Spread fragments it can be either selective @live on the spread
+          // or live fragment on fragment itself.
+          parentPath,
+          parentLive ||
+          hasLiveDirective(selection.directives) ||
+          hasLiveDirective(fragment.directives),
         );
         break;
     }
@@ -629,7 +663,7 @@ function resolveField(
 
   // Get the resolve function, regardless of if its result is normal
   // or abrupt (error).
-  let result = resolveOrError(
+  const result = resolveWithLive(
     exeContext,
     fieldDef,
     fieldNode,
@@ -638,11 +672,6 @@ function resolveField(
     context,
     info
   );
-
-  // if promise is returned, convert to observable.
-  if ( getPromise(result) ) {
-    result = toObservable(result);
-  }
 
   return completeValueCatchingError(
     exeContext,
@@ -800,17 +829,12 @@ function completeValue(
   result: mixed
 ): mixed {
 
-  const obs = handleReactiveDirective(
-    exeContext,
-    fieldNodes[0].directives,
-    info,
-    path,
-    result,
-  );
-
-  // If result is Observable
+  // If result is Observable, rescurse in with a result,
+  // while taking care of @defer directive
+  const promise = getPromise(result);
+  const obs = (promise && toObservable(promise)) || getObservable(result);
   if (obs) {
-    return obs.map(
+    const completedObservable = obs.map(
       resolved => completeValue(
         exeContext,
         returnType,
@@ -821,6 +845,12 @@ function completeValue(
       )
     )
     .switchMap(value => toObservable(value));
+
+    return handleDeferDirective(exeContext,
+      fieldNodes[0].directives,
+      info,
+      path,
+      completedObservable);
   }
 
   // If result is an Error, throw a located error.
@@ -1138,7 +1168,8 @@ function collectAndExecuteSubfields(
         returnType,
         selectionSet,
         subFieldNodes,
-        visitedFragmentNames
+        visitedFragmentNames,
+        path,
       );
     }
   }
@@ -1244,34 +1275,134 @@ function getFieldDef(
   return parentType.getFields()[fieldName];
 }
 
-// GQL-RxJs: TemporaryName
-// This function will apply directives over values before complation.
-function handleReactiveDirective<T>(
+function resolveWithLive<TSource, TContext>(
+  exeContext: ExecutionContext,
+  fieldDef: GraphQLField<TSource, TContext>,
+  fieldNode: FieldNode,
+  resolveFn: GraphQLFieldResolver<TSource, TContext>,
+  source: TSource,
+  context: TContext,
+  info: GraphQLResolveInfo
+): Error | mixed {
+  const path = responsePathAsArray(info.path).join('.');
+
+  if ( exeContext.liveCache.hasOwnProperty(path) ) {
+    return exeContext.liveCache[path];
+  }
+
+  let result = resolveOrError(
+    exeContext,
+    fieldDef,
+    fieldNode,
+    resolveFn,
+    source,
+    context,
+    info
+  );
+
+  // if promise is returned, convert to observable.
+  if ( getPromise(result) ) {
+    result = toObservable(result);
+  }
+
+  // store result for live if possible
+
+  // no need to store result if we are running subscription
+  // or the node isn't possibly live till the end.
+  // or parent is live itself. (not in liveCache)
+  if ( exeContext.operation.operation === 'subscription' ||
+       exeContext.liveMap[path] ) {
+    return result;
+  }
+
+  const isLive = selectionPossiblyHasLive(exeContext, fieldNode);
+  const obs = getObservable(result);
+  if ( obs && !isLive ) {
+    result = obs.take(1);
+  }
+
+  exeContext.liveCache[path] = result;
+  return result;
+}
+
+function handleDeferDirective<T>(
   exeContext: ExecutionContext,
   directives: ?Array<DirectiveNode>,
   info: GraphQLResolveInfo,
   path: ResponsePath,
-  result: Observable<T> | Promise<T> | T,
-): Observable<T> | void {
-  const promise = getPromise(result);
-  let obs = (promise && toObservable(promise)) || getObservable(result);
+  result: Observable<T>,
+): Observable<T> {
 
-  // GQL-RxJs: We won't support deferring just resolved values,
-  // at least not right from day 0.
-  if (!obs) {
-    return;
+  if ( !directives ) {
+    return result;
   }
 
-  // GQL-RxJs: if observable is returned, make sure it won't be reactive
-  // for query and mutation.
-  // NOTE: in the future, this can be modified to
-  // support reactive directives.
-  if ( (exeContext.operation.operation === 'query') ||
-    (exeContext.operation.operation === 'mutation') ) {
-    obs = obs.take(1);
+  const isDeffered = directives
+    .some(d => d.name.value === GraphQLDeferDirective.name);
+  return isDeffered ? result.startWith(null) : result;
+}
+
+function hasLiveDirective(
+  directives: ?Array<DirectiveNode>
+): boolean {
+  if ( !directives ) {
+    return false;
   }
 
-  return obs;
+  return directives
+    .some(d => d.name.value === GraphQLLiveDirective.name);
+}
+
+function selectionPossiblyHasLive(
+  exeContext: ExecutionContext,
+  selection: SelectionNode,
+) {
+  if ( hasLiveDirective(selection.directives) ) {
+    return true;
+  }
+  let selectionSet: ?SelectionSetNode;
+
+  switch ( selection.kind ) {
+    case Kind.FIELD:
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+
+      selectionSet = selection.selectionSet;
+      break;
+    case Kind.INLINE_FRAGMENT:
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+
+      selectionSet = selection.selectionSet;
+      break;
+    case Kind.FRAGMENT_SPREAD:
+      const fragName = selection.name.value;
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+      const fragment = exeContext.fragments[fragName];
+      if (!fragment) {
+        return false;
+      }
+      if ( hasLiveDirective(fragment.directives) ) {
+        return true;
+      }
+
+      selectionSet = fragment.selectionSet;
+      break;
+    default:
+      return false;
+  }
+
+  if ( !selectionSet ) {
+    return false;
+  }
+
+  return selectionSet.selections.some(curSelection => {
+    return selectionPossiblyHasLive(exeContext, curSelection);
+  });
 }
 
 /**
