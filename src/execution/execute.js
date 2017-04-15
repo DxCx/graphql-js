@@ -45,9 +45,6 @@ import {
 import {
   GraphQLIncludeDirective,
   GraphQLSkipDirective,
-  // GQL-RxJs: Reactive Directives
-  GraphQLDeferDirective,
-  GraphQLLiveDirective,
 } from '../type/directives';
 import type {
   DirectiveNode,
@@ -63,6 +60,10 @@ import type {
 import {
   Observable
 } from 'rxjs';
+import {
+  GraphQLDeferDirective,
+  GraphQLLiveDirective,
+} from '../type/reactiveDirectives';
 
 /**
  * Terminology
