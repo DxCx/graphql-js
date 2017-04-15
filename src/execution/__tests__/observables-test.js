@@ -162,18 +162,15 @@ describe('Execute: Supports reactive directives', () => {
         },
       }),
     });
-    let counter = null;
 
-    return executeReactive(schema, parse(doc), data).do(result => {
-      expect(result).to.deep.equal({
-        data: { counter },
-      });
-      counter = 1;
-    }).toPromise().then(fresult => {
+    return executeReactive(schema, parse(doc), data)
+    .bufferCount(10)
+    .toPromise().then(fresult => {
       // makes sure final is correct.
-      expect(fresult).to.deep.equal({
-        data: { counter: 1 },
-      });
+      expect(fresult).to.deep.equal([
+        { data: { counter: undefined } },
+        { data: { counter: 1 }, }
+      ]);
     });
   });
 
@@ -213,19 +210,16 @@ describe('Execute: Supports reactive directives', () => {
         },
       }),
     });
-    let counter = null;
 
-    return executeReactive(schema, parse(doc), data).do(result => {
-      expect(result).to.deep.equal({
-        data: { counter },
+    return executeReactive(schema, parse(doc), data)
+      .bufferCount(10)
+      .toPromise().then(fresult => {
+        // makes sure final is correct.
+        expect(fresult).to.deep.equal([
+          { data: { counter: undefined } },
+          { data: { counter: 1 } },
+        ]);
       });
-      counter = 1;
-    }).toPromise().then(fresult => {
-      // makes sure final is correct.
-      expect(fresult).to.deep.equal({
-        data: { counter: 1 },
-      });
-    });
   });
 
   it('@defer work on nested value query', () => {
@@ -258,8 +252,8 @@ describe('Execute: Supports reactive directives', () => {
       }),
     });
     const expected = [
-      { data: { test: null } },
-      { data: { test: { immediate: 'Works!', counter: null } } },
+      { data: { test: undefined } },
+      { data: { test: { immediate: 'Works!', counter: undefined } } },
       { data: { test: { immediate: 'Works!', counter: 1 } } },
     ];
 
@@ -284,18 +278,15 @@ describe('Execute: Supports reactive directives', () => {
         },
       }),
     });
-    let counter = null;
 
-    return executeReactive(schema, parse(doc), data).do(result => {
-      expect(result).to.deep.equal({
-        data: { counter },
-      });
-      counter = 1;
-    }).toPromise().then(fresult => {
+    return executeReactive(schema, parse(doc), data)
+    .bufferCount(10)
+    .toPromise().then(fresult => {
       // makes sure final is correct.
-      expect(fresult).to.deep.equal({
-        data: { counter: 1 },
-      });
+      expect(fresult).to.deep.equal([
+        { data: { counter: undefined } },
+        { data: { counter: 1 }, }
+      ]);
     });
   });
 
@@ -317,7 +308,7 @@ describe('Execute: Supports reactive directives', () => {
     return executeReactive(schema, parse(doc), data).do(result => {
       if ( firstResult ) {
         expect(result).to.deep.equal({
-          data: { counter: null },
+          data: { counter: undefined },
         });
       }
 

@@ -1346,7 +1346,7 @@ function handleDeferDirective<T>(
 
   const isDeffered = directives
     .some(d => d.name.value === GraphQLDeferDirective.name);
-  return isDeffered ? result.startWith(null) : result;
+  return isDeffered ? result.startWith(undefined) : result;
 }
 
 function hasLiveDirective(
