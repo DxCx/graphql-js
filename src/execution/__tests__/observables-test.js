@@ -7,6 +7,7 @@ import {
   GraphQLObjectType,
   GraphQLString,
   GraphQLInt,
+  GraphQLNonNull,
 } from '../../type';
 import {
   Observable
@@ -176,6 +177,29 @@ describe('Execute: Supports reactive directives', () => {
     });
   });
 
+  it('@defer doesn\'t work on immediate value', () => {
+    const doc = `query Example {
+      counter @defer
+    }`;
+    const data = { counter: 1 };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          counter: { type: GraphQLInt }
+        },
+      }),
+    });
+
+    return executeReactive(schema, parse(doc), data)
+    .toPromise().then(fresult => {
+      // makes sure final is correct.
+      expect(fresult).to.deep.equal({
+        data: { counter: 1 },
+      });
+    });
+  });
+
   it('@defer doesn\'t apply twice', () => {
     const doc = `query Example {
       counter @defer @defer
@@ -201,6 +225,109 @@ describe('Execute: Supports reactive directives', () => {
       expect(fresult).to.deep.equal({
         data: { counter: 1 },
       });
+    });
+  });
+
+  it('@defer work on nested value query', () => {
+    const doc = `query Example {
+      test @defer {
+        immediate
+        counter @defer
+      }
+    }`;
+    const data = {
+      test: Observable.of({
+        immediate: 'Works!',
+        counter: Observable.of(1),
+      }),
+    };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          test: {
+            type: new GraphQLObjectType({
+              name: 'TestType',
+              fields: {
+                immediate: { type: GraphQLString },
+                counter: { type: GraphQLInt },
+              }
+            }),
+          },
+        },
+      }),
+    });
+    const expected = [
+      { data: { test: null } },
+      { data: { test: { immediate: 'Works!', counter: null } } },
+      { data: { test: { immediate: 'Works!', counter: 1 } } },
+    ];
+
+    return executeReactive(schema, parse(doc), data)
+    .bufferCount(expected.length)
+    .toPromise().then(fresult => {
+      // makes sure final is correct.
+      expect(fresult).to.deep.equal(expected);
+    });
+  });
+
+  it('@defer should work with Non-Null field', () => {
+    const doc = `query Example {
+      counter @defer
+    }`;
+    const data = { counter: Observable.of(1).delay(50).toPromise() };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          counter: { type: new GraphQLNonNull(GraphQLInt) }
+        },
+      }),
+    });
+    let counter = null;
+
+    return executeReactive(schema, parse(doc), data).do(result => {
+      expect(result).to.deep.equal({
+        data: { counter },
+      });
+      counter = 1;
+    }).toPromise().then(fresult => {
+      // makes sure final is correct.
+      expect(fresult).to.deep.equal({
+        data: { counter: 1 },
+      });
+    });
+  });
+
+  it('@defer error if realve value is null on Non-Null field', () => {
+    const doc = `query Example {
+      counter @defer
+    }`;
+    const data = { counter: Observable.of(null).delay(50).toPromise() };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          counter: { type: new GraphQLNonNull(GraphQLInt) }
+        },
+      }),
+    });
+    let firstResult = true;
+
+    return executeReactive(schema, parse(doc), data).do(result => {
+      if ( firstResult ) {
+        expect(result).to.deep.equal({
+          data: { counter: null },
+        });
+      }
+
+      firstResult = false;
+    }).toPromise().then(fresult => {
+      expect(fresult.data).to.equal(null);
+      expect(fresult.errors && fresult.errors.length).to.equal(1);
+      expect(fresult.errors[0].message).to.match(
+        /Cannot return null for non-nullable field/
+      );
     });
   });
 
