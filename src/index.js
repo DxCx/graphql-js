@@ -393,3 +393,21 @@ export type {
   IntrospectionTypeRef,
   IntrospectionUnionType,
 } from './utilities';
+
+export {
+  GraphQLLiveDirective,
+  GraphQLDeferDirective,
+
+  reactiveDirectives,
+  addReactiveDirectivesToSchema,
+} from './type';
+
+export {
+  executeReactive
+} from './execution';
+export {
+  graphqlReactive,
+} from './graphql';
+export {
+  NoReactiveMutationsRule
+} from './validation';

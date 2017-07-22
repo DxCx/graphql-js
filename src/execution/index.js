@@ -11,3 +11,5 @@ export { execute, defaultFieldResolver, responsePathAsArray } from './execute';
 export { getDirectiveValues } from './values';
 
 export type { ExecutionResult } from './execute';
+
+export { executeReactive } from './execute';
