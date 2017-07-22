@@ -56,6 +56,24 @@ import type {
   FragmentDefinitionNode,
 } from '../language/ast';
 
+import type {
+  SelectionNode,
+} from '../language/ast';
+
+import {
+  GraphQLDeferDirective,
+  GraphQLLiveDirective,
+} from '../type/reactiveDirectives';
+
+import {
+  createAsyncIterator,
+  getAsyncIterator,
+  $$asyncIterator,
+} from 'iterall';
+
+import {
+  mapAsyncIterator,
+} from '../subscription/mapAsyncIterator';
 
 /**
  * Terminology
@@ -92,6 +110,10 @@ export type ExecutionContext = {
   variableValues: {[key: string]: mixed};
   fieldResolver: GraphQLFieldResolver<any, any>;
   errors: Array<GraphQLError>;
+
+  // GQL-RxJs: used to store static results on @live request
+  liveCache: {[key: string]: mixed};
+  liveMap: {[key: string]: boolean};
 };
 
 /**
@@ -135,6 +157,61 @@ declare function execute(
   fieldResolver?: ?GraphQLFieldResolver<any, any>
 ): Promise<ExecutionResult>;
 export function execute(
+  argsOrSchema,
+  document,
+  rootValue,
+  contextValue,
+  variableValues,
+  operationName,
+  fieldResolver
+) {
+
+  return new Promise(resolve => {
+    const result = executeReactive(argsOrSchema,
+      document,
+      rootValue,
+      contextValue,
+      variableValues,
+      operationName,
+      fieldResolver);
+
+    resolve(result.next().then(v => {
+      result.return();
+      return v.value;
+    }));
+  });
+}
+
+/**
+ * Implements the "Evaluating requests" section of the GraphQL specification.
+ *
+ * Returns an AsyncIterator
+ *
+ * If the arguments to this function do not result in a legal execution context,
+ * a GraphQLError will be thrown immediately explaining the invalid input.
+ *
+ * Accepts either an object with named arguments, or individual arguments.
+ */
+declare function executeReactive({|
+  schema: GraphQLSchema,
+  document: DocumentNode,
+  rootValue?: mixed,
+  contextValue?: mixed,
+  variableValues?: ?{[key: string]: mixed},
+  operationName?: ?string,
+  fieldResolver?: ?GraphQLFieldResolver<any, any>
+|}, ..._: []): AsyncIterator<ExecutionResult>;
+/* eslint-disable no-redeclare */
+declare function executeReactive(
+  schema: GraphQLSchema,
+  document: DocumentNode,
+  rootValue?: mixed,
+  contextValue?: mixed,
+  variableValues?: ?{[key: string]: mixed},
+  operationName?: ?string,
+  fieldResolver?: ?GraphQLFieldResolver<any, any>
+): AsyncIterator<ExecutionResult>;
+export function executeReactive(
   argsOrSchema,
   document,
   rootValue,
@@ -197,21 +274,21 @@ function executeImpl(
       fieldResolver
     );
   } catch (error) {
-    return Promise.resolve({ errors: [ error ] });
+    return createAsyncIterator([ { errors: [ error ] } ]);
   }
 
-  // Return a Promise that will eventually resolve to the data described by
-  // The "Response" section of the GraphQL specification.
+  // Return an AsyncIterator that will eventually resolve to the data described
+  // By the "Response" section of the GraphQL specification.
   //
   // If errors are encountered while executing a GraphQL field, only that
   // field and its descendants will be omitted, and sibling fields will still
   // be executed. An execution which encounters errors will still result in a
   // resolved Promise.
-  return Promise.resolve(
-    executeOperation(context, context.operation, rootValue)
-  ).then(data => context.errors.length === 0 ?
-    { data } :
-    { errors: context.errors, data }
+  return mapAsyncIterator(
+    executeOperation(context, context.operation, rootValue),
+    data => context.errors.length === 0 ?
+      { data } :
+      { errors: context.errors, data }
   );
 }
 
@@ -326,6 +403,8 @@ export function buildExecutionContext(
     contextValue,
     operation,
     variableValues,
+    liveCache: {},
+    liveMap: {},
     fieldResolver: fieldResolver || defaultFieldResolver,
     errors,
   };
@@ -363,7 +442,7 @@ function executeOperation(
     if (promise) {
       return promise.then(undefined, error => {
         exeContext.errors.push(error);
-        return Promise.resolve(null);
+        return createAsyncIterator([ null ]);
       });
     }
     return result;
@@ -420,6 +499,15 @@ function executeFieldsSerially(
   path: ResponsePath,
   fields: {[key: string]: Array<FieldNode>}
 ): Promise<{[key: string]: mixed}> {
+
+  // XXX: Need to create Serial variation of AsyncIterator
+  // Still need to think about how it should behave, for example,
+  // defered mutation with non deferred one.
+  // Do we want to progress on first value?
+  // or do we want to progress on complete?
+  // What happens if new value arrives from previous result?
+  // are we going to re-evaluate everything?
+
   return Object.keys(fields).reduce(
     (prevPromise, responseName) => prevPromise.then(results => {
       const fieldNodes = fields[responseName];
@@ -459,7 +547,7 @@ function executeFields(
   path: ResponsePath,
   fields: {[key: string]: Array<FieldNode>}
 ): {[key: string]: mixed} {
-  let containsPromise = false;
+  let containsAsyncIterator = false;
 
   const finalResults = Object.keys(fields).reduce(
     (results, responseName) => {
@@ -475,25 +563,26 @@ function executeFields(
       if (result === undefined) {
         return results;
       }
+
       results[responseName] = result;
-      if (getPromise(result)) {
-        containsPromise = true;
+      if (getAsyncIterator(result)) {
+        containsAsyncIterator = true;
       }
       return results;
     },
     Object.create(null)
   );
 
-  // If there are no promises, we can just return the object
-  if (!containsPromise) {
+  // If there are no iterators, we can just return the object
+  if (!containsAsyncIterator) {
     return finalResults;
   }
 
   // Otherwise, results is a map from field name to the result
-  // of resolving that field, which is possibly a promise. Return
-  // a promise that will return this same map, but with any
-  // promises replaced with the values they resolved to.
-  return promiseForObject(finalResults);
+  // of resolving that field, which is possibly an async iterator. Return
+  // a async iterator that will return this same map, but with any
+  // async iterator replaced with the values they resolved to.
+  return asyncIteratorForObject(finalResults);
 }
 
 /**
@@ -509,7 +598,11 @@ export function collectFields(
   runtimeType: GraphQLObjectType,
   selectionSet: SelectionSetNode,
   fields: {[key: string]: Array<FieldNode>},
-  visitedFragmentNames: {[key: string]: boolean}
+  visitedFragmentNames: {[key: string]: boolean},
+
+  // GQL-RxJs: helper arguments for supporting @live
+  parentPath: ResponsePath,
+  parentLive: ?boolean,
 ): {[key: string]: Array<FieldNode>} {
   for (let i = 0; i < selectionSet.selections.length; i++) {
     const selection = selectionSet.selections[i];
@@ -522,6 +615,14 @@ export function collectFields(
         if (!fields[name]) {
           fields[name] = [];
         }
+
+        // GQL-RxJs: append to liveMap
+        const isLive = parentLive || hasLiveDirective(selection.directives);
+        const fieldPath = responsePathAsArray(
+          addPath(parentPath, name),
+        ).join('.');
+        exeContext.liveMap[fieldPath] = isLive;
+
         fields[name].push(selection);
         break;
       case Kind.INLINE_FRAGMENT:
@@ -534,7 +635,11 @@ export function collectFields(
           runtimeType,
           selection.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          parentPath,
+          parentLive || hasLiveDirective(selection.directives),
         );
         break;
       case Kind.FRAGMENT_SPREAD:
@@ -554,7 +659,15 @@ export function collectFields(
           runtimeType,
           fragment.selectionSet,
           fields,
-          visitedFragmentNames
+          visitedFragmentNames,
+
+          // GQL-RxJs: collect live status from fragmant
+          // for Spread fragments it can be either selective @live on the spread
+          // or live fragment on fragment itself.
+          parentPath,
+          parentLive ||
+          hasLiveDirective(selection.directives) ||
+          hasLiveDirective(fragment.directives),
         );
         break;
     }
@@ -619,12 +732,14 @@ function doesFragmentConditionMatch(
  * This is akin to bluebird's `Promise.props`, but implemented only using
  * `Promise.all` so it will work with any implementation of ES6 promises.
  */
-function promiseForObject<T>(
-  object: {[key: string]: Promise<T>}
-): Promise<{[key: string]: T}> {
+function asyncIteratorForObject<T>(
+  object: {[key: string]: mixed}
+): AsyncIterator<{[key: string]: T}> {
   const keys = Object.keys(object);
   const valuesAndPromises = keys.map(name => object[name]);
-  return Promise.all(valuesAndPromises).then(
+
+  return combineLatestAsyncIterator(
+    valuesAndPromises.map(value => toAsyncIterator(value)),
     values => values.reduce((resolvedObject, value, i) => {
       resolvedObject[keys[i]] = value;
       return resolvedObject;
@@ -672,7 +787,7 @@ function resolveField(
 
   // Get the resolve function, regardless of if its result is normal
   // or abrupt (error).
-  const result = resolveFieldValueOrError(
+  const result = resolveWithLive(
     exeContext,
     fieldDef,
     fieldNodes,
@@ -781,15 +896,15 @@ function completeValueCatchingError(
       path,
       result
     );
-    const promise = getPromise(completed);
-    if (promise) {
+    const asyncIterable = getAsyncIterator(completed);
+    if (asyncIterable) {
       // If `completeValueWithLocatedError` returned a rejected promise, log
       // the rejection error and resolve to null.
       // Note: we don't rely on a `catch` method, but we do expect "thenable"
       // to take a second callback for the error case.
-      return promise.then(undefined, error => {
+      return catchErrorsAsyncIterator(asyncIterable, error => {
         exeContext.errors.push(error);
-        return Promise.resolve(null);
+        return createAsyncIterator([ null ]);
       });
     }
     return completed;
@@ -820,11 +935,11 @@ function completeValueWithLocatedError(
       path,
       result
     );
-    const promise = getPromise(completed);
-    if (promise) {
-      return promise.then(
-        undefined,
-        error => Promise.reject(
+    const asyncIterable = getAsyncIterator(completed);
+    if (asyncIterable) {
+      return catchErrorsAsyncIterator(
+        asyncIterable,
+        error => AsyncIterator.throw(
           locatedError(error, fieldNodes, responsePathAsArray(path))
         )
       );
@@ -866,17 +981,27 @@ function completeValue(
 ): mixed {
   // If result is a Promise, apply-lift over completeValue.
   const promise = getPromise(result);
-  if (promise) {
-    return promise.then(
-      resolved => completeValue(
+  const asyncIterable = (promise && toAsyncIterator(promise)) ||
+    getAsyncIterator(result);
+
+  if (asyncIterable) {
+    const completedValue = switchMapAsyncIterator(
+      asyncIterable,
+      resolved => toAsyncIterator(completeValue(
         exeContext,
         returnType,
         fieldNodes,
         info,
         path,
         resolved
-      )
+      ))
     );
+
+    return handleDeferDirective(exeContext,
+      fieldNodes[0].directives,
+      info,
+      path,
+      completedValue);
   }
 
   // If result is an Error, throw a located error.
@@ -979,7 +1104,7 @@ function completeListValue(
   // This is specified as a simple map, however we're optimizing the path
   // where the list contains no Promises by avoiding creating another Promise.
   const itemType = returnType.ofType;
-  let containsPromise = false;
+  let containsAsyncIterator = false;
   const completedResults = [];
   forEach((result: any), (item, index) => {
     // No need to modify the info object containing the path,
@@ -994,13 +1119,14 @@ function completeListValue(
       item
     );
 
-    if (!containsPromise && getPromise(completedItem)) {
-      containsPromise = true;
+    if (!containsAsyncIterator && getAsyncIterator(completedItem)) {
+      containsAsyncIterator = true;
     }
     completedResults.push(completedItem);
   });
 
-  return containsPromise ? Promise.all(completedResults) : completedResults;
+  return containsAsyncIterator ?
+    toAsyncIterator(completedResults) : completedResults;
 }
 
 /**
@@ -1038,10 +1164,11 @@ function completeAbstractValue(
     returnType.resolveType(result, exeContext.contextValue, info) :
     defaultResolveTypeFn(result, exeContext.contextValue, info, returnType);
 
+  // GQL-RxJs: No Reason to support observable from resolveType..
   const promise = getPromise(runtimeType);
   if (promise) {
-    return promise.then(resolvedRuntimeType =>
-      completeObjectValue(
+    return switchMapAsyncIterator(toAsyncIterator(promise),
+      resolvedRuntimeType => toAsyncIterator(completeObjectValue(
         exeContext,
         ensureValidRuntimeType(
           resolvedRuntimeType,
@@ -1056,7 +1183,7 @@ function completeAbstractValue(
         path,
         result
       )
-    );
+    ));
   }
 
   return completeObjectValue(
@@ -1125,21 +1252,24 @@ function completeObjectValue(
   if (returnType.isTypeOf) {
     const isTypeOf = returnType.isTypeOf(result, exeContext.contextValue, info);
 
+    // GQL-RxJs: No Reason to support observable from isTypeOf..
     const promise = getPromise(isTypeOf);
     if (promise) {
-      return promise.then(isTypeOfResult => {
-        if (!isTypeOfResult) {
-          throw invalidReturnTypeError(returnType, result, fieldNodes);
+      return switchMapAsyncIterator(toAsyncIterator(promise),
+        isTypeOfResult => {
+          if (!isTypeOfResult) {
+            throw invalidReturnTypeError(returnType, result, fieldNodes);
+          }
+          return toAsyncIterator(collectAndExecuteSubfields(
+            exeContext,
+            returnType,
+            fieldNodes,
+            info,
+            path,
+            result
+          ));
         }
-        return collectAndExecuteSubfields(
-          exeContext,
-          returnType,
-          fieldNodes,
-          info,
-          path,
-          result
-        );
-      });
+      );
     }
 
     if (!isTypeOf) {
@@ -1187,7 +1317,8 @@ function collectAndExecuteSubfields(
         returnType,
         selectionSet,
         subFieldNodes,
-        visitedFragmentNames
+        visitedFragmentNames,
+        path
       );
     }
   }
@@ -1215,6 +1346,8 @@ function defaultResolveTypeFn(
     if (type.isTypeOf) {
       const isTypeOfResult = type.isTypeOf(value, context, info);
 
+      // GQL-RxJs: Will no need to handle the promise here because
+      // it is handled in completeAbstractValue.
       const promise = getPromise(isTypeOfResult);
       if (promise) {
         promisedIsTypeOfResults[i] = promise;
@@ -1289,4 +1422,330 @@ export function getFieldDef(
     return TypeNameMetaFieldDef;
   }
   return parentType.getFields()[fieldName];
+}
+
+function resolveWithLive<TSource, TContext>(
+  exeContext: ExecutionContext,
+  fieldDef: GraphQLField<TSource, TContext>,
+  fieldNode: FieldNode,
+  resolveFn: GraphQLFieldResolver<TSource, TContext>,
+  source: TSource,
+  context: TContext,
+  info: GraphQLResolveInfo
+): Error | mixed {
+  const path = responsePathAsArray(info.path).join('.');
+
+  if ( exeContext.liveCache.hasOwnProperty(path) ) {
+    return exeContext.liveCache[path];
+  }
+
+  let result = resolveFieldValueOrError(
+    exeContext,
+    fieldDef,
+    fieldNode,
+    resolveFn,
+    source,
+    context,
+    info
+  );
+
+  // if promise is returned, convert to async iterator.
+  if ( getPromise(result) ) {
+    result = toAsyncIterator(result);
+  }
+
+  // XXX: if completeValueCatchingError is not enough,
+  // we will need to test if async iterator, and then catch errors
+  // and push them to context errors.
+
+  // Store result for live if possible
+
+  // no need to store result if node isn't possibly live till the end.
+  // or parent is live itself. (not in liveCache)
+  if ( exeContext.liveMap[path] ) {
+    return result;
+  }
+
+  const iterator = getAsyncIterator(result);
+  if ( iterator && !selectionPossiblyHasLive(exeContext, fieldNode) ) {
+    result = takeFirstAsyncIterator(iterator);
+  }
+
+  exeContext.liveCache[path] = result;
+  return result;
+}
+
+function handleDeferDirective<T>(
+  exeContext: ExecutionContext,
+  directives: ?Array<DirectiveNode>,
+  info: GraphQLResolveInfo,
+  path: ResponsePath,
+  result: AsyncIterator<T>,
+): AsyncIterator<T> {
+
+  if ( !directives ) {
+    return result;
+  }
+
+  const isDeffered = directives
+    .some(d => d.name.value === GraphQLDeferDirective.name);
+  return isDeffered ? DefferAsyncIterator(result) : result;
+}
+
+function hasLiveDirective(
+  directives: ?Array<DirectiveNode>
+): boolean {
+  if ( !directives ) {
+    return false;
+  }
+
+  return directives
+    .some(d => d.name.value === GraphQLLiveDirective.name);
+}
+
+function selectionPossiblyHasLive(
+  exeContext: ExecutionContext,
+  selection: SelectionNode,
+) {
+  if ( hasLiveDirective(selection.directives) ) {
+    return true;
+  }
+  let selectionSet: ?SelectionSetNode;
+
+  switch ( selection.kind ) {
+    case Kind.FIELD:
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+
+      selectionSet = selection.selectionSet;
+      break;
+    case Kind.INLINE_FRAGMENT:
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+
+      selectionSet = selection.selectionSet;
+      break;
+    case Kind.FRAGMENT_SPREAD:
+      const fragName = selection.name.value;
+      if (!shouldIncludeNode(exeContext, selection.directives)) {
+        return false;
+      }
+      const fragment = exeContext.fragments[fragName];
+      if (!fragment) {
+        return false;
+      }
+      if ( hasLiveDirective(fragment.directives) ) {
+        return true;
+      }
+
+      selectionSet = fragment.selectionSet;
+      break;
+    default:
+      return false;
+  }
+
+  if ( !selectionSet ) {
+    return false;
+  }
+
+  return selectionSet.selections.some(curSelection => {
+    return selectionPossiblyHasLive(exeContext, curSelection);
+  });
+}
+
+/**
+ * this function recursively searches for AsyncIterators.
+ * returns true if found or false if not.
+ */
+function objectContainsAsyncIterator(
+  object: mixed
+): boolean {
+  if ( object === null ) {
+    return false;
+  }
+
+  if ( getAsyncIterator(object) || getPromise(object) ) {
+    // AsyncIterator/Promise found,
+    // returns true then Promise will be converted into Async Iterator
+    return true;
+  }
+
+  if ( Array.isArray(object) ) {
+    // Go over all of the array values, recursively search for AsyncIterator.
+    return object.some(value => objectContainsAsyncIterator(value));
+  }
+
+  if ( typeof object === 'object' ) {
+    const asObject = (object: { [key: string]: mixed });
+    // Go over all of the object values, recursively search for AsyncIterator.
+    return Object.keys(asObject)
+      .some(value => objectContainsAsyncIterator(asObject[value]));
+  }
+
+  return false;
+}
+
+/**
+ * Utility function used to convert all possible result types into AsyncIterator
+ */
+function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
+  if (result === undefined) {
+    return undefined;
+  }
+
+  if (result === null) {
+    return createAsyncIterator([ null ]);
+  }
+
+  if (Array.isArray(result) && (objectContainsAsyncIterator(result) === true)) {
+    return combineLatestAsyncIterator(
+      result.map(value => toAsyncIterator(value)),
+      undefined,
+    );
+  }
+
+  if (getAsyncIterator(result)) {
+    return (result: AsyncIterator<mixed>);
+  }
+
+  if (getPromise(result)) {
+    return createAsyncIterator([ result ]);
+  }
+
+  if ((!Array.isArray(result)) &&
+      (typeof result === 'object') &&
+      (objectContainsAsyncIterator(result) === true)) {
+    return asyncIteratorForObject((result: {[key: string]: mixed}));
+  }
+
+  return createAsyncIterator([ result ]);
+}
+
+/**
+ * Utility function to combineLatest asyncIterator results
+ */
+function combineLatestAsyncIterator<U>(
+  iterators: Array<AsyncIterable<mixed>>,
+  callback?: (values: Array<mixed>) => Promise<U> | U
+): AsyncIterator<mixed> {
+
+  // XXX: Implement this function
+
+  return {
+    next() {
+      return Promise.reject('Unimplemented');
+    },
+    return() {
+      return Promise.reject('Unimplemented');
+    },
+    throw(error) {
+      return Promise.reject('Unimplemented');
+    },
+    [$$asyncIterator]() {
+      return this;
+    },
+  };
+}
+
+/**
+ * Utility function to take only first result of asyncIterator results
+ */
+function takeFirstAsyncIterator<T>(
+  iterator: AsyncIterable<T>
+): AsyncIterator<T> {
+
+  // XXX: Implement this function
+
+  return {
+    next() {
+      return Promise.reject('Unimplemented');
+    },
+    return() {
+      return Promise.reject('Unimplemented');
+    },
+    throw(error) {
+      return Promise.reject('Unimplemented');
+    },
+    [$$asyncIterator]() {
+      return this;
+    },
+  };
+}
+
+/**
+ * Utility function to catch errors of asyncIterator
+ */
+function catchErrorsAsyncIterator<T>(
+  iterator: AsyncIterable<T>,
+  callback: (error: Error) => AsyncIterable<T>
+): AsyncIterator<T> {
+  // XXX: Implement this function
+
+  return {
+    next() {
+      return Promise.reject('Unimplemented');
+    },
+    return() {
+      return Promise.reject('Unimplemented');
+    },
+    throw(error) {
+      return Promise.reject('Unimplemented');
+    },
+    [$$asyncIterator]() {
+      return this;
+    },
+  };
+}
+
+/**
+ * Utility function to switchMap over asyncIterator
+ */
+function switchMapAsyncIterator<T, U>(
+  iterator: AsyncIterable<T>,
+  callback: (value: T) => AsyncIterable<U>
+): AsyncIterator<U> {
+  // XXX: Implement this function
+
+  return {
+    next() {
+      return Promise.reject('Unimplemented');
+    },
+    return() {
+      return Promise.reject('Unimplemented');
+    },
+    throw(error) {
+      return Promise.reject('Unimplemented');
+    },
+    [$$asyncIterator]() {
+      return this;
+    },
+  };
+}
+
+/**
+ * Utility function to deffer over asyncIterator
+ */
+function DefferAsyncIterator<T>(
+  iterator: AsyncIterable<T>
+): AsyncIterator<T> {
+  // XXX: Implement this function
+
+  // Start with undefined
+
+  return {
+    next() {
+      return Promise.reject('Unimplemented');
+    },
+    return() {
+      return Promise.reject('Unimplemented');
+    },
+    throw(error) {
+      return Promise.reject('Unimplemented');
+    },
+    [$$asyncIterator]() {
+      return this;
+    },
+  };
 }
