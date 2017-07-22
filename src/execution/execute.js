@@ -58,6 +58,7 @@ import type {
 
 import type {
   SelectionNode,
+  DirectiveNode
 } from '../language/ast';
 
 import {
@@ -68,12 +69,10 @@ import {
 import {
   createAsyncIterator,
   getAsyncIterator,
-  $$asyncIterator,
+  isAsyncIterable,
 } from 'iterall';
 
-import {
-  mapAsyncIterator,
-} from '../subscription/mapAsyncIterator';
+import mapAsyncIterator from '../subscription/mapAsyncIterator';
 
 /**
  * Terminology
@@ -201,7 +200,6 @@ declare function executeReactive({|
   operationName?: ?string,
   fieldResolver?: ?GraphQLFieldResolver<any, any>
 |}, ..._: []): AsyncIterator<ExecutionResult>;
-/* eslint-disable no-redeclare */
 declare function executeReactive(
   schema: GraphQLSchema,
   document: DocumentNode,
@@ -417,7 +415,7 @@ function executeOperation(
   exeContext: ExecutionContext,
   operation: OperationDefinitionNode,
   rootValue: mixed
-): ?{[key: string]: mixed} {
+): AsyncIterator<mixed> {
   const type = getOperationRootType(exeContext.schema, operation);
   const fields = collectFields(
     exeContext,
@@ -438,17 +436,19 @@ function executeOperation(
     const result = operation.operation === 'mutation' ?
       executeFieldsSerially(exeContext, type, rootValue, path, fields) :
       executeFields(exeContext, type, rootValue, path, fields);
-    const promise = getPromise(result);
-    if (promise) {
-      return promise.then(undefined, error => {
+
+    const asyncIterator = getAsyncIterator(result);
+    if (asyncIterator) {
+      return catchErrorsAsyncIterator(asyncIterator, (error: GraphQLError) => {
         exeContext.errors.push(error);
         return createAsyncIterator([ null ]);
       });
     }
-    return result;
+
+    return createAsyncIterator([ result ]);
   } catch (error) {
     exeContext.errors.push(error);
-    return null;
+    return createAsyncIterator([ null ]);
   }
 }
 
@@ -498,18 +498,10 @@ function executeFieldsSerially(
   sourceValue: mixed,
   path: ResponsePath,
   fields: {[key: string]: Array<FieldNode>}
-): Promise<{[key: string]: mixed}> {
-
-  // XXX: Need to create Serial variation of AsyncIterator
-  // Still need to think about how it should behave, for example,
-  // defered mutation with non deferred one.
-  // Do we want to progress on first value?
-  // or do we want to progress on complete?
-  // What happens if new value arrives from previous result?
-  // are we going to re-evaluate everything?
-
+): AsyncIterator<{[key: string]: mixed}> {
   return Object.keys(fields).reduce(
-    (prevPromise, responseName) => prevPromise.then(results => {
+    (prev, responseName) => concatAsyncIterator(prev, lastResult => {
+      const results = lastResult || {};
       const fieldNodes = fields[responseName];
       const fieldPath = addPath(path, responseName);
       const result = resolveField(
@@ -519,20 +511,23 @@ function executeFieldsSerially(
         fieldNodes,
         fieldPath
       );
+
       if (result === undefined) {
         return results;
       }
-      const promise = getPromise(result);
-      if (promise) {
-        return promise.then(resolvedResult => {
+
+      const asyncIterator = getAsyncIterator(result);
+      if (asyncIterator) {
+        return mapAsyncIterator(asyncIterator, resolvedResult => {
           results[responseName] = resolvedResult;
           return results;
         });
       }
+
       results[responseName] = result;
       return results;
     }),
-    Promise.resolve({})
+    createAsyncIterator([ {} ])
   );
 }
 
@@ -565,7 +560,7 @@ function executeFields(
       }
 
       results[responseName] = result;
-      if (getAsyncIterator(result)) {
+      if (isAsyncIterable(result)) {
         containsAsyncIterator = true;
       }
       return results;
@@ -580,7 +575,7 @@ function executeFields(
 
   // Otherwise, results is a map from field name to the result
   // of resolving that field, which is possibly an async iterator. Return
-  // a async iterator that will return this same map, but with any
+  // a async iterator that will return this; same map, but with any
   // async iterator replaced with the values they resolved to.
   return asyncIteratorForObject(finalResults);
 }
@@ -737,10 +732,12 @@ function asyncIteratorForObject<T>(
 ): AsyncIterator<{[key: string]: T}> {
   const keys = Object.keys(object);
   const valuesAndPromises = keys.map(name => object[name]);
+  const combined = combineLatestAsyncIterator(
+    valuesAndPromises.map(value => toAsyncIterator(value))
+  );
 
-  return combineLatestAsyncIterator(
-    valuesAndPromises.map(value => toAsyncIterator(value)),
-    values => values.reduce((resolvedObject, value, i) => {
+  return mapAsyncIterator(combined, values => values.reduce(
+    (resolvedObject, value, i) => {
       resolvedObject[keys[i]] = value;
       return resolvedObject;
     }, Object.create(null))
@@ -902,7 +899,7 @@ function completeValueCatchingError(
       // the rejection error and resolve to null.
       // Note: we don't rely on a `catch` method, but we do expect "thenable"
       // to take a second callback for the error case.
-      return catchErrorsAsyncIterator(asyncIterable, error => {
+      return catchErrorsAsyncIterator(asyncIterable, (error: GraphQLError) => {
         exeContext.errors.push(error);
         return createAsyncIterator([ null ]);
       });
@@ -937,12 +934,7 @@ function completeValueWithLocatedError(
     );
     const asyncIterable = getAsyncIterator(completed);
     if (asyncIterable) {
-      return catchErrorsAsyncIterator(
-        asyncIterable,
-        error => AsyncIterator.throw(
-          locatedError(error, fieldNodes, responsePathAsArray(path))
-        )
-      );
+      return addLocatedErrorAsyncIterator(asyncIterable, fieldNodes, path);
     }
     return completed;
   } catch (error) {
@@ -1119,7 +1111,7 @@ function completeListValue(
       item
     );
 
-    if (!containsAsyncIterator && getAsyncIterator(completedItem)) {
+    if (!containsAsyncIterator && isAsyncIterable(completedItem)) {
       containsAsyncIterator = true;
     }
     completedResults.push(completedItem);
@@ -1171,7 +1163,8 @@ function completeAbstractValue(
       resolvedRuntimeType => toAsyncIterator(completeObjectValue(
         exeContext,
         ensureValidRuntimeType(
-          resolvedRuntimeType,
+          // XXX: Better to resolve properly without casting here.
+          ((resolvedRuntimeType: any): ?GraphQLObjectType | string),
           exeContext,
           returnType,
           fieldNodes,
@@ -1424,13 +1417,12 @@ export function getFieldDef(
   return parentType.getFields()[fieldName];
 }
 
-function resolveWithLive<TSource, TContext>(
+function resolveWithLive<TSource>(
   exeContext: ExecutionContext,
-  fieldDef: GraphQLField<TSource, TContext>,
-  fieldNode: FieldNode,
-  resolveFn: GraphQLFieldResolver<TSource, TContext>,
+  fieldDef: GraphQLField<TSource, *>,
+  fieldNodes: Array<FieldNode>,
+  resolveFn: GraphQLFieldResolver<TSource, *>,
   source: TSource,
-  context: TContext,
   info: GraphQLResolveInfo
 ): Error | mixed {
   const path = responsePathAsArray(info.path).join('.');
@@ -1442,10 +1434,9 @@ function resolveWithLive<TSource, TContext>(
   let result = resolveFieldValueOrError(
     exeContext,
     fieldDef,
-    fieldNode,
+    fieldNodes,
     resolveFn,
     source,
-    context,
     info
   );
 
@@ -1453,10 +1444,6 @@ function resolveWithLive<TSource, TContext>(
   if ( getPromise(result) ) {
     result = toAsyncIterator(result);
   }
-
-  // XXX: if completeValueCatchingError is not enough,
-  // we will need to test if async iterator, and then catch errors
-  // and push them to context errors.
 
   // Store result for live if possible
 
@@ -1467,7 +1454,7 @@ function resolveWithLive<TSource, TContext>(
   }
 
   const iterator = getAsyncIterator(result);
-  if ( iterator && !selectionPossiblyHasLive(exeContext, fieldNode) ) {
+  if ( iterator && !selectionPossiblyHasLive(exeContext, fieldNodes[0]) ) {
     result = takeFirstAsyncIterator(iterator);
   }
 
@@ -1481,7 +1468,7 @@ function handleDeferDirective<T>(
   info: GraphQLResolveInfo,
   path: ResponsePath,
   result: AsyncIterator<T>,
-): AsyncIterator<T> {
+): AsyncIterator<?T> {
 
   if ( !directives ) {
     return result;
@@ -1514,14 +1501,14 @@ function selectionPossiblyHasLive(
 
   switch ( selection.kind ) {
     case Kind.FIELD:
-      if (!shouldIncludeNode(exeContext, selection.directives)) {
+      if (!shouldIncludeNode(exeContext, selection)) {
         return false;
       }
 
       selectionSet = selection.selectionSet;
       break;
     case Kind.INLINE_FRAGMENT:
-      if (!shouldIncludeNode(exeContext, selection.directives)) {
+      if (!shouldIncludeNode(exeContext, selection)) {
         return false;
       }
 
@@ -1529,7 +1516,7 @@ function selectionPossiblyHasLive(
       break;
     case Kind.FRAGMENT_SPREAD:
       const fragName = selection.name.value;
-      if (!shouldIncludeNode(exeContext, selection.directives)) {
+      if (!shouldIncludeNode(exeContext, selection)) {
         return false;
       }
       const fragment = exeContext.fragments[fragName];
@@ -1566,7 +1553,7 @@ function objectContainsAsyncIterator(
     return false;
   }
 
-  if ( getAsyncIterator(object) || getPromise(object) ) {
+  if ( isAsyncIterable(object) || getPromise(object) ) {
     // AsyncIterator/Promise found,
     // returns true then Promise will be converted into Async Iterator
     return true;
@@ -1592,7 +1579,7 @@ function objectContainsAsyncIterator(
  */
 function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
   if (result === undefined) {
-    return undefined;
+    return ((undefined: any): AsyncIterator<mixed>);
   }
 
   if (result === null) {
@@ -1601,13 +1588,12 @@ function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
 
   if (Array.isArray(result) && (objectContainsAsyncIterator(result) === true)) {
     return combineLatestAsyncIterator(
-      result.map(value => toAsyncIterator(value)),
-      undefined,
+      result.map(value => toAsyncIterator(value))
     );
   }
 
-  if (getAsyncIterator(result)) {
-    return (result: AsyncIterator<mixed>);
+  if (isAsyncIterable(result)) {
+    return ((result: any): AsyncIterator<mixed>);
   }
 
   if (getPromise(result)) {
@@ -1626,126 +1612,224 @@ function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
 /**
  * Utility function to combineLatest asyncIterator results
  */
-function combineLatestAsyncIterator<U>(
-  iterators: Array<AsyncIterable<mixed>>,
-  callback?: (values: Array<mixed>) => Promise<U> | U
-): AsyncIterator<mixed> {
+function combineLatestAsyncIterator(
+  iterators: Array<AsyncIterator<mixed>>
+): AsyncIterator<Array<mixed>> {
+  let liveIterators:Array<AsyncIterator<mixed>> = [].concat(iterators);
 
-  // XXX: Implement this function
+  async function* combineLatestGenerator() {
+    // The state for this combination.
+    const state = [];
 
-  return {
-    next() {
-      return Promise.reject('Unimplemented');
-    },
-    return() {
-      return Promise.reject('Unimplemented');
-    },
-    throw(error) {
-      return Promise.reject('Unimplemented');
-    },
-    [$$asyncIterator]() {
-      return this;
-    },
-  };
+    // Generate next Iteration.
+    function getNext() {
+      return liveIterators.map((iter, i) => {
+        const p:(Promise<Array<mixed>> & { done?: boolean }) =
+          iter.next().then(({value, done}) => {
+            if (done) {
+              liveIterators = liveIterators.filter(x => x !== iter);
+            } else {
+              state[i] = value;
+            }
+
+            p.done = true;
+            return state;
+          });
+
+        return p;
+      });
+    }
+
+    // Yield latest state for each changing state.
+    async function* nextValues() {
+      let nextPromises = getNext();
+
+      while ( nextPromises.length > 0 ) {
+        const firstResolved = Promise.race(nextPromises);
+
+        yield await firstResolved; // eslint-disable-line no-await-in-loop
+        nextPromises = nextPromises.filter(p => !p.done);
+      }
+    }
+
+    // First make sure every iterator runs at least once.
+    await Promise.all(getNext());
+
+    // Yield initial state
+    yield state;
+
+    while ( liveIterators.length > 0 ) {
+      yield* nextValues();
+    }
+  }
+
+  return combineLatestGenerator();
+}
+
+/**
+ * Utility function to combineLatest asyncIterator results
+ */
+function concatAsyncIterator<T>(
+  iterator: AsyncIterator<T>,
+  concatCallback: (latestValue: ?T) => AsyncIterator<T> | T
+): AsyncIterator<T> {
+  async function* concatGenerator() {
+    let latestValue: T;
+
+    // yield the origial iterator.
+    for await (const i of iterator) { // eslint-disable-line semi
+      latestValue = i;
+      yield i;
+    }
+
+    const next: AsyncIterator<T> | T = concatCallback(latestValue);
+    const nextIterator: ?AsyncIterator<T> = getAsyncIterator(next);
+    if ( nextIterator ) {
+      yield* nextIterator;
+    } else {
+      yield ((next: any): T);
+    }
+  }
+
+  return concatGenerator();
 }
 
 /**
  * Utility function to take only first result of asyncIterator results
  */
 function takeFirstAsyncIterator<T>(
-  iterator: AsyncIterable<T>
-): AsyncIterator<T> {
+  iterator: AsyncIterator<T>
+): AsyncIterator<?T> {
+  async function* takeFirstGenerator() {
+    // take only first promise.
+    yield await iterator.next().then(({ value }) => value);
 
-  // XXX: Implement this function
+    if ( typeof iterator.return === 'function' ) {
+      iterator.return();
+    }
+  }
 
-  return {
-    next() {
-      return Promise.reject('Unimplemented');
-    },
-    return() {
-      return Promise.reject('Unimplemented');
-    },
-    throw(error) {
-      return Promise.reject('Unimplemented');
-    },
-    [$$asyncIterator]() {
-      return this;
-    },
-  };
+  return takeFirstGenerator();
 }
 
 /**
  * Utility function to catch errors of asyncIterator
  */
 function catchErrorsAsyncIterator<T>(
-  iterator: AsyncIterable<T>,
-  callback: (error: Error) => AsyncIterable<T>
+  iterator: AsyncIterator<T>,
+  errorHandler: (error: any) => AsyncIterator<T>
 ): AsyncIterator<T> {
-  // XXX: Implement this function
+  async function* catchGenerator() {
+    let err: ?AsyncIterator<T>;
+    let hasError = false;
+    const infinateLoop = true;
 
-  return {
-    next() {
-      return Promise.reject('Unimplemented');
-    },
-    return() {
-      return Promise.reject('Unimplemented');
-    },
-    throw(error) {
-      return Promise.reject('Unimplemented');
-    },
-    [$$asyncIterator]() {
-      return this;
-    },
-  };
+    while (infinateLoop) {
+      let c:IteratorResult<T, void>;
+
+      try {
+        c = await iterator.next(); // eslint-disable-line no-await-in-loop
+        if (c.done) { break; }
+      } catch (e) {
+        err = await errorHandler(e); // eslint-disable-line no-await-in-loop
+        hasError = true;
+        break;
+      }
+
+      yield c.value;
+    }
+
+    if (hasError && err) {
+      for (const item of err) { // eslint-disable-line semi
+        yield await item; // eslint-disable-line no-await-in-loop
+      }
+    }
+  }
+
+  return catchGenerator();
 }
 
 /**
  * Utility function to switchMap over asyncIterator
  */
 function switchMapAsyncIterator<T, U>(
-  iterator: AsyncIterable<T>,
-  callback: (value: T) => AsyncIterable<U>
+  iterator: AsyncIterator<T>,
+  switchMapCallback: (value: T) => AsyncIterator<U>
 ): AsyncIterator<U> {
-  // XXX: Implement this function
+  async function* switchMapGenerator() {
+    const infinateLoop = true;
+    let outerValue:IteratorResult<T, void>;
 
-  return {
-    next() {
-      return Promise.reject('Unimplemented');
-    },
-    return() {
-      return Promise.reject('Unimplemented');
-    },
-    throw(error) {
-      return Promise.reject('Unimplemented');
-    },
-    [$$asyncIterator]() {
-      return this;
-    },
-  };
+    outerValue = await iterator.next();
+    while (!outerValue.done) {
+      const inner = switchMapCallback(outerValue.value);
+      let $return = () => ({ done: true });
+      if (typeof iterator.return === 'function') {
+        $return = iterator.return;
+      }
+
+      let nextPromise;
+      const switchValue = iterator.next().then((newOuter => {
+        outerValue = newOuter;
+        if ( newOuter.done ) {
+          return nextPromise;
+        }
+
+        return $return.call(inner);
+      }));
+
+      while (infinateLoop) {
+        nextPromise = inner.next();
+
+        const resProm = (!outerValue.done ? Promise.race([
+          switchValue, nextPromise
+        ]) : nextPromise);
+        const result: IteratorResult<U, void> =
+          await resProm; // eslint-disable-line no-await-in-loop
+
+        if ( result.done ) {
+          break;
+        }
+
+        yield result.value;
+      }
+    }
+  }
+
+  return switchMapGenerator();
 }
 
 /**
  * Utility function to deffer over asyncIterator
  */
 function DefferAsyncIterator<T>(
-  iterator: AsyncIterable<T>
+  iterator: AsyncIterator<T>
+): AsyncIterator<?T> {
+
+  async function* defferGenerator() {
+    // reply with undefine as initial result.
+    yield undefined;
+
+    // yield the origial iterator.
+    yield* iterator;
+  }
+
+  return defferGenerator();
+}
+
+function addLocatedErrorAsyncIterator<T>(
+  iterator: AsyncIterator<T>,
+  fieldNodes: Array<FieldNode>,
+  path: ResponsePath
 ): AsyncIterator<T> {
-  // XXX: Implement this function
+  return catchErrorsAsyncIterator(
+    iterator,
+    error => {
+      async function* errorGenerator() {
+        throw locatedError(error, fieldNodes, responsePathAsArray(path));
+      }
 
-  // Start with undefined
-
-  return {
-    next() {
-      return Promise.reject('Unimplemented');
-    },
-    return() {
-      return Promise.reject('Unimplemented');
-    },
-    throw(error) {
-      return Promise.reject('Unimplemented');
-    },
-    [$$asyncIterator]() {
-      return this;
-    },
-  };
+      return errorGenerator();
+    }
+  );
 }
