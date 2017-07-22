@@ -391,3 +391,11 @@ export type {
   IntrospectionTypeRef,
   IntrospectionUnionType,
 } from './utilities';
+
+export {
+  GraphQLLiveDirective,
+  GraphQLDeferDirective,
+
+  reactiveDirectives,
+  addReactiveDirectivesToSchema,
+} from './type';
