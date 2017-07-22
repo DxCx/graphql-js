@@ -9,7 +9,7 @@
 
 import { expect } from 'chai';
 import { describe, it } from 'mocha';
-import mapAsyncIterator from '../mapAsyncIterator';
+import { mapAsyncIterator } from '../asyncIterator';
 
 describe('mapAsyncIterator', () => {
 
