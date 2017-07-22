@@ -128,3 +128,11 @@ export type {
   GraphQLTypeResolver,
   GraphQLUnionTypeConfig,
 } from './definition';
+
+export {
+  GraphQLLiveDirective,
+  GraphQLDeferDirective,
+
+  reactiveDirectives,
+  addReactiveDirectivesToSchema,
+} from './reactiveDirectives';
