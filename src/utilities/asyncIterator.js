@@ -281,9 +281,9 @@ export function catchErrorsAsyncIterator<T>(
   iterable: AsyncIterable<T>,
   errorHandler: (error: any) => AsyncIterable<T>
 ): AsyncIterable<T> {
-  const iterator = getAsyncIterator(iterable);
-
   async function* catchGenerator() {
+    const iterator = getAsyncIterator(iterable);
+
     let err: ?AsyncIterable<T>;
     let hasError = false;
     const infinateLoop = true;

@@ -9,6 +9,7 @@ import {
   switchMapAsyncIterator,
   mapAsyncIterator,
   defferAsyncIterator,
+  catchErrorsAsyncIterator,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -161,5 +162,48 @@ describe('defferAsyncIterator', () => {
     const iterator = createAsyncIterator([ 1, 2 ]);
     const result = await asyncToArray(defferAsyncIterator(iterator));
     expect(result).to.deep.equal([ undefined, 1, 2 ]);
+  });
+});
+
+describe('catchErrorsAsyncIterator', () => {
+  it('invisable if no error happens ', async () => {
+    const iterator = createAsyncIterator([ 1, 2 ]);
+    const catchedIterator = catchErrorsAsyncIterator(iterator, () => {
+      return createAsyncIterator([]);
+    });
+
+    const result = await asyncToArray(catchedIterator);
+    expect(result).to.deep.equal([ 1, 2 ]);
+  });
+
+  it('actually catches error', async () => {
+    const iterator = createAsyncIterator([
+      1,
+      Promise.reject(new Error('hold')),
+      2,
+    ]);
+    const catchedIterator = catchErrorsAsyncIterator(iterator, e => {
+      return createAsyncIterator([ e.message ]);
+    });
+
+    const result = await asyncToArray(catchedIterator);
+    expect(result).to.deep.equal([ 1, 'hold' ]);
+  });
+
+  it('not recursive', async () => {
+    const iterator = createAsyncIterator([
+      1,
+      Promise.reject(new Error('hold')),
+      2,
+    ]);
+    const catchedIterator = catchErrorsAsyncIterator(iterator, e => {
+      throw e;
+    });
+
+    try {
+      await asyncToArray(catchedIterator);
+    } catch (e) {
+      expect(e.message).to.equal('hold');
+    }
   });
 });
