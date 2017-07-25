@@ -164,20 +164,14 @@ export function execute(
   operationName,
   fieldResolver
 ) {
+  const result = executeReactive(...arguments);
 
-  return new Promise(resolve => {
-    const result = executeReactive(argsOrSchema,
-      document,
-      rootValue,
-      contextValue,
-      variableValues,
-      operationName,
-      fieldResolver);
+  return result.next().then(v => {
+    if ( typeof result.return === 'function' ) {
+      return result.return().then(() => v.value);
+    }
 
-    resolve(result.next().then(v => {
-      result.return();
-      return v.value;
-    }));
+    return v.value;
   });
 }
 
@@ -1667,7 +1661,7 @@ function combineLatestAsyncIterator(
 }
 
 /**
- * Utility function to combineLatest asyncIterator results
+ * Utility function to concat asyncIterator results
  */
 function concatAsyncIterator<T>(
   iterator: AsyncIterator<T>,
@@ -1675,11 +1669,15 @@ function concatAsyncIterator<T>(
 ): AsyncIterator<T> {
   async function* concatGenerator() {
     let latestValue: T;
+    const infinateLoop = true;
 
-    // yield the origial iterator.
-    for await (const i of iterator) { // eslint-disable-line semi
-      latestValue = i;
-      yield i;
+    while ( infinateLoop ) {
+      const i = await iterator.next();
+      if ( i.done ) {
+        break;
+      }
+
+      latestValue = i.value;
     }
 
     const next: AsyncIterator<T> | T = concatCallback(latestValue);
@@ -1740,8 +1738,8 @@ function catchErrorsAsyncIterator<T>(
     }
 
     if (hasError && err) {
-      for (const item of err) { // eslint-disable-line semi
-        yield await item; // eslint-disable-line no-await-in-loop
+      for await (const item of err) { // eslint-disable-line semi
+        yield item; // eslint-disable-line no-await-in-loop
       }
     }
   }
