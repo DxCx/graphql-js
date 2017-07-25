@@ -8,6 +8,7 @@ import {
   asyncIteratorForObject,
   switchMapAsyncIterator,
   mapAsyncIterator,
+  defferAsyncIterator,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -152,5 +153,13 @@ describe('switchMapAsyncIterator', () => {
       [ 2, 4 ],
       [ 2, 5 ],
     ]);
+  });
+});
+
+describe('defferAsyncIterator', () => {
+  it('pass sanity', async () => {
+    const iterator = createAsyncIterator([ 1, 2 ]);
+    const result = await asyncToArray(defferAsyncIterator(iterator));
+    expect(result).to.deep.equal([ undefined, 1, 2 ]);
   });
 });

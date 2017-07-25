@@ -376,12 +376,12 @@ export function switchMapAsyncIterator<T, U>(
 /**
  * Utility function to deffer over asyncIterator
  */
-export function DefferAsyncIterator<T>(
+export function defferAsyncIterator<T>(
   iterable: AsyncIterable<T>,
 ): AsyncIterable<?T> {
-  const iterator = getAsyncIterator(iterable);
-
   async function* defferGenerator() {
+    const iterator = getAsyncIterator(iterable);
+
     // reply with undefine as initial result.
     yield undefined;
 

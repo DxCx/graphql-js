@@ -80,7 +80,7 @@ import {
   takeFirstAsyncIterator,
   catchErrorsAsyncIterator,
   switchMapAsyncIterator,
-  DefferAsyncIterator,
+  defferAsyncIterator,
 } from '../utilities/asyncIterator';
 
 /**
@@ -1474,7 +1474,7 @@ function handleDeferDirective<T>(
 
   const isDeffered = directives
     .some(d => d.name.value === GraphQLDeferDirective.name);
-  return isDeffered ? DefferAsyncIterator(result) : result;
+  return isDeffered ? defferAsyncIterator(result) : result;
 }
 
 function hasLiveDirective(
