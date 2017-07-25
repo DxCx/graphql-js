@@ -70,6 +70,7 @@ import {
   createAsyncIterator,
   getAsyncIterator,
   isAsyncIterable,
+  $$asyncIterator,
 } from 'iterall';
 
 import mapAsyncIterator from '../subscription/mapAsyncIterator';
@@ -164,7 +165,26 @@ export function execute(
   operationName,
   fieldResolver
 ) {
-  const result = executeReactive(...arguments);
+  const args = arguments.length === 1 ? argsOrSchema : undefined;
+  const result = args ?
+    executeReactive(
+      args.schema,
+      args.document,
+      args.rootValue,
+      args.contextValue,
+      args.variableValues,
+      args.operationName,
+      args.fieldResolver
+    ) :
+    executeReactive(
+      argsOrSchema,
+      document,
+      rootValue,
+      contextValue,
+      variableValues,
+      operationName,
+      fieldResolver
+    );
 
   return result.next().then(v => {
     if ( typeof result.return === 'function' ) {
@@ -409,7 +429,7 @@ function executeOperation(
   exeContext: ExecutionContext,
   operation: OperationDefinitionNode,
   rootValue: mixed
-): AsyncIterator<mixed> {
+): AsyncIterable<mixed> {
   const type = getOperationRootType(exeContext.schema, operation);
   const fields = collectFields(
     exeContext,
@@ -492,7 +512,7 @@ function executeFieldsSerially(
   sourceValue: mixed,
   path: ResponsePath,
   fields: {[key: string]: Array<FieldNode>}
-): AsyncIterator<{[key: string]: mixed}> {
+): AsyncIterable<{[key: string]: mixed}> {
   return Object.keys(fields).reduce(
     (prev, responseName) => concatAsyncIterator(prev, lastResult => {
       const results = lastResult || {};
@@ -723,7 +743,7 @@ function doesFragmentConditionMatch(
  */
 function asyncIteratorForObject<T>(
   object: {[key: string]: mixed}
-): AsyncIterator<{[key: string]: T}> {
+): AsyncIterable<{[key: string]: T}> {
   const keys = Object.keys(object);
   const valuesAndPromises = keys.map(name => object[name]);
   const combined = combineLatestAsyncIterator(
@@ -1461,8 +1481,8 @@ function handleDeferDirective<T>(
   directives: ?Array<DirectiveNode>,
   info: GraphQLResolveInfo,
   path: ResponsePath,
-  result: AsyncIterator<T>,
-): AsyncIterator<?T> {
+  result: AsyncIterable<T>,
+): AsyncIterable<?T> {
 
   if ( !directives ) {
     return result;
@@ -1571,9 +1591,9 @@ function objectContainsAsyncIterator(
 /**
  * Utility function used to convert all possible result types into AsyncIterator
  */
-function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
+function toAsyncIterator(result: mixed): AsyncIterable<mixed> {
   if (result === undefined) {
-    return ((undefined: any): AsyncIterator<mixed>);
+    return ((undefined: any): AsyncIterable<mixed>);
   }
 
   if (result === null) {
@@ -1587,7 +1607,7 @@ function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
   }
 
   if (isAsyncIterable(result)) {
-    return ((result: any): AsyncIterator<mixed>);
+    return ((result: any): AsyncIterable<mixed>);
   }
 
   if (getPromise(result)) {
@@ -1607,9 +1627,11 @@ function toAsyncIterator(result: mixed): AsyncIterator<mixed> {
  * Utility function to combineLatest asyncIterator results
  */
 function combineLatestAsyncIterator(
-  iterators: Array<AsyncIterator<mixed>>
-): AsyncIterator<Array<mixed>> {
-  let liveIterators:Array<AsyncIterator<mixed>> = [].concat(iterators);
+  iterables: Array<AsyncIterable<mixed>>
+): AsyncIterable<Array<mixed>> {
+  let liveIterators:Array<AsyncIterator<mixed>> = iterables.map(
+    iter => getAsyncIterator(iter)
+  );
 
   async function* combineLatestGenerator() {
     // The state for this combination.
@@ -1657,22 +1679,26 @@ function combineLatestAsyncIterator(
     }
   }
 
-  return combineLatestGenerator();
+  return {
+    [$$asyncIterator]: combineLatestGenerator,
+  };
 }
 
 /**
  * Utility function to concat asyncIterator results
  */
 function concatAsyncIterator<T>(
-  iterator: AsyncIterator<T>,
-  concatCallback: (latestValue: ?T) => AsyncIterator<T> | T
-): AsyncIterator<T> {
+  iterable: AsyncIterable<T>,
+  concatCallback: (latestValue: ?T) => AsyncIterable<T> | T
+): AsyncIterable<T> {
+  const iterator = getAsyncIterator(iterable);
+
   async function* concatGenerator() {
     let latestValue: T;
     const infinateLoop = true;
 
     while ( infinateLoop ) {
-      const i = await iterator.next();
+      const i = await iterator.next(); // eslint-disable-line no-await-in-loop
       if ( i.done ) {
         break;
       }
@@ -1680,7 +1706,7 @@ function concatAsyncIterator<T>(
       latestValue = i.value;
     }
 
-    const next: AsyncIterator<T> | T = concatCallback(latestValue);
+    const next: AsyncIterable<T> | T = concatCallback(latestValue);
     const nextIterator: ?AsyncIterator<T> = getAsyncIterator(next);
     if ( nextIterator ) {
       yield* nextIterator;
@@ -1689,15 +1715,19 @@ function concatAsyncIterator<T>(
     }
   }
 
-  return concatGenerator();
+  return {
+    [$$asyncIterator]: concatGenerator,
+  };
 }
 
 /**
  * Utility function to take only first result of asyncIterator results
  */
 function takeFirstAsyncIterator<T>(
-  iterator: AsyncIterator<T>
-): AsyncIterator<?T> {
+  iterable: AsyncIterable<T>,
+): AsyncIterable<?T> {
+  const iterator = getAsyncIterator(iterable);
+
   async function* takeFirstGenerator() {
     // take only first promise.
     yield await iterator.next().then(({ value }) => value);
@@ -1707,18 +1737,22 @@ function takeFirstAsyncIterator<T>(
     }
   }
 
-  return takeFirstGenerator();
+  return {
+    [$$asyncIterator]: takeFirstGenerator,
+  };
 }
 
 /**
  * Utility function to catch errors of asyncIterator
  */
 function catchErrorsAsyncIterator<T>(
-  iterator: AsyncIterator<T>,
-  errorHandler: (error: any) => AsyncIterator<T>
-): AsyncIterator<T> {
+  iterable: AsyncIterable<T>,
+  errorHandler: (error: any) => AsyncIterable<T>
+): AsyncIterable<T> {
+  const iterator = getAsyncIterator(iterable);
+
   async function* catchGenerator() {
-    let err: ?AsyncIterator<T>;
+    let err: ?AsyncIterable<T>;
     let hasError = false;
     const infinateLoop = true;
 
@@ -1744,23 +1778,29 @@ function catchErrorsAsyncIterator<T>(
     }
   }
 
-  return catchGenerator();
+  return {
+    [$$asyncIterator]: catchGenerator,
+  };
 }
 
 /**
  * Utility function to switchMap over asyncIterator
  */
 function switchMapAsyncIterator<T, U>(
-  iterator: AsyncIterator<T>,
-  switchMapCallback: (value: T) => AsyncIterator<U>
-): AsyncIterator<U> {
+  iterable: AsyncIterable<T>,
+  switchMapCallback: (value: T) => AsyncIterable<U>
+): AsyncIterable<U> {
+  const iterator = getAsyncIterator(iterable);
+
   async function* switchMapGenerator() {
     const infinateLoop = true;
     let outerValue:IteratorResult<T, void>;
 
     outerValue = await iterator.next();
     while (!outerValue.done) {
-      const inner = switchMapCallback(outerValue.value);
+      const switchMapResult = switchMapCallback(outerValue.value);
+      const inner = getAsyncIterator(switchMapResult);
+
       let $return = () => ({ done: true });
       if (typeof iterator.return === 'function') {
         $return = iterator.return;
@@ -1794,15 +1834,18 @@ function switchMapAsyncIterator<T, U>(
     }
   }
 
-  return switchMapGenerator();
+  return {
+    [$$asyncIterator]: switchMapGenerator,
+  };
 }
 
 /**
  * Utility function to deffer over asyncIterator
  */
 function DefferAsyncIterator<T>(
-  iterator: AsyncIterator<T>
-): AsyncIterator<?T> {
+  iterable: AsyncIterable<T>,
+): AsyncIterable<?T> {
+  const iterator = getAsyncIterator(iterable);
 
   async function* defferGenerator() {
     // reply with undefine as initial result.
@@ -1812,22 +1855,26 @@ function DefferAsyncIterator<T>(
     yield* iterator;
   }
 
-  return defferGenerator();
+  return {
+    [$$asyncIterator]: defferGenerator,
+  };
 }
 
 function addLocatedErrorAsyncIterator<T>(
-  iterator: AsyncIterator<T>,
+  iterable: AsyncIterable<T>,
   fieldNodes: Array<FieldNode>,
   path: ResponsePath
-): AsyncIterator<T> {
+): AsyncIterable<T> {
   return catchErrorsAsyncIterator(
-    iterator,
+    iterable,
     error => {
       async function* errorGenerator() {
         throw locatedError(error, fieldNodes, responsePathAsArray(path));
       }
 
-      return errorGenerator();
+      return {
+        [$$asyncIterator]: errorGenerator,
+      };
     }
   );
 }
