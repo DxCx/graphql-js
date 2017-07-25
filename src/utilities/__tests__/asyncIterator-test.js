@@ -4,6 +4,7 @@ import { getAsyncIterator, createAsyncIterator } from 'iterall';
 import {
   takeFirstAsyncIterator,
   combineLatestAsyncIterator,
+  concatAsyncIterator,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -68,5 +69,17 @@ describe('combineLatestAsyncIterator', () => {
       [ 2, 4, 6 ],
       [ 2, 5, 6 ],
     ]);
+  });
+});
+
+describe('concatAsyncIterator', () => {
+  it('pass sanity', async () => {
+    const iterator = createAsyncIterator([ 1, 2 ]);
+    const nextIterator = concatAsyncIterator(iterator, state => {
+      return [ ...state, 3, 4 ];
+    });
+
+    const result = await asyncToArray(takeFirstAsyncIterator(nextIterator));
+    expect(result).to.deep.equal([ [ 2, 3, 4 ] ]);
   });
 });
