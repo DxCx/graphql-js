@@ -34,7 +34,8 @@
 
 // The primary entry point into fulfilling a GraphQL request.
 export {
-  graphql
+  graphql,
+  graphqlReactive,
 } from './graphql';
 
 
@@ -235,6 +236,7 @@ export type {
 // Execute GraphQL queries.
 export {
   execute,
+  executeReactive,
   defaultFieldResolver,
   responsePathAsArray,
   getDirectiveValues,
