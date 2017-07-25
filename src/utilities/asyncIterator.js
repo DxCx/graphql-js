@@ -337,7 +337,8 @@ export function switchMapAsyncIterator<T, U>(
       }
 
       let nextPromise;
-      const switchValue = iterator.next().then((newOuter => {
+
+      const switchPromise = iterator.next().then((newOuter => {
         outerValue = newOuter;
         if ( newOuter.done ) {
           return nextPromise;
@@ -350,7 +351,7 @@ export function switchMapAsyncIterator<T, U>(
         nextPromise = inner.next();
 
         const resProm = (!outerValue.done ? Promise.race([
-          switchValue, nextPromise
+          switchPromise, nextPromise
         ]) : nextPromise);
         const result: IteratorResult<U, void> =
           await resProm; // eslint-disable-line no-await-in-loop
@@ -361,6 +362,9 @@ export function switchMapAsyncIterator<T, U>(
 
         yield result.value;
       }
+
+      // makes sure switch promise executed.
+      await switchPromise; // eslint-disable-line no-await-in-loop
     }
   }
 

@@ -6,6 +6,8 @@ import {
   combineLatestAsyncIterator,
   concatAsyncIterator,
   asyncIteratorForObject,
+  switchMapAsyncIterator,
+  mapAsyncIterator,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -100,6 +102,55 @@ describe('asyncIteratorForObject', () => {
       { a: 2, b: 3, c: 6 },
       { a: 2, b: 4, c: 6 },
       { a: 2, b: 5, c: 6 },
+    ]);
+  });
+});
+
+describe('switchMapAsyncIterator', () => {
+  it('pass sanity', async () => {
+    const outer = createAsyncIterator([
+      promiseGen(1, 50),
+      promiseGen(2, 300),
+    ]);
+    const innerGen = () => createAsyncIterator([ promiseGen(3, 100), 4, 5 ]);
+    const switched = switchMapAsyncIterator(outer, outRes => {
+      return mapAsyncIterator(innerGen(), inRes => [ outRes, inRes ]);
+    });
+
+    const result = await asyncToArray(switched);
+
+    expect(result).to.deep.equal([
+      [ 1, 3 ],
+      [ 1, 4 ],
+      [ 1, 5 ],
+      [ 2, 3 ],
+      [ 2, 4 ],
+      [ 2, 5 ],
+    ]);
+  });
+
+  it('actually switches if outer emits before inner completes', async () => {
+    const outer = createAsyncIterator([
+      promiseGen(1, 50),
+      promiseGen(2, 200),
+    ]);
+    const innerGen = () => createAsyncIterator([
+      promiseGen(3, 100),
+      4,
+      promiseGen(5, 200),
+    ]);
+    const switched = switchMapAsyncIterator(outer, outRes => {
+      return mapAsyncIterator(innerGen(), inRes => [ outRes, inRes ]);
+    });
+
+    const result = await asyncToArray(switched);
+
+    expect(result).to.deep.equal([
+      [ 1, 3 ],
+      [ 1, 4 ],
+      [ 2, 3 ],
+      [ 2, 4 ],
+      [ 2, 5 ],
     ]);
   });
 });
