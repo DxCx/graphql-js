@@ -5,6 +5,7 @@ import {
   takeFirstAsyncIterator,
   combineLatestAsyncIterator,
   concatAsyncIterator,
+  asyncIteratorForObject,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -25,6 +26,10 @@ async function asyncToArray(iterable) {
   return responses;
 }
 
+const promiseGen = (value, timeout) => new Promise(resolve => {
+  setTimeout(() => resolve(value), timeout);
+});
+
 describe('takeFirstAsyncIterator', () => {
   it('pass sanity', async () => {
     const iterator = createAsyncIterator([ 1, 2 ]);
@@ -34,10 +39,6 @@ describe('takeFirstAsyncIterator', () => {
 });
 
 describe('combineLatestAsyncIterator', () => {
-  const promiseGen = (value, timeout) => new Promise(resolve => {
-    setTimeout(() => resolve(value), timeout);
-  });
-
   it('pass sanity', async () => {
     const iterators = [
       createAsyncIterator([ 1, 2 ]),
@@ -81,5 +82,24 @@ describe('concatAsyncIterator', () => {
 
     const result = await asyncToArray(takeFirstAsyncIterator(nextIterator));
     expect(result).to.deep.equal([ [ 2, 3, 4 ] ]);
+  });
+});
+
+describe('asyncIteratorForObject', () => {
+  it('pass sanity', async () => {
+    const iterators = {
+      a: createAsyncIterator([ promiseGen(1, 50), 2 ]),
+      b: createAsyncIterator([ promiseGen(3, 100), 4, 5 ]),
+      c: createAsyncIterator([ promiseGen(6, 70) ]),
+    };
+
+    const result = await asyncToArray(asyncIteratorForObject(iterators));
+
+    expect(result).to.deep.equal([
+      { a: 1, b: 3, c: 6 },
+      { a: 2, b: 3, c: 6 },
+      { a: 2, b: 4, c: 6 },
+      { a: 2, b: 5, c: 6 },
+    ]);
   });
 });
