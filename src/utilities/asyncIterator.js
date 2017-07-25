@@ -171,11 +171,24 @@ export function combineLatestAsyncIterator(
             }
 
             p.done = true;
-            return state;
+            return [ ...state ];
           });
 
         return p;
       });
+    }
+
+    function getFirstState() {
+      // make sure every iterator runs at least once.
+      // and then return latest result
+      let stateLatest = [];
+
+      return Promise.all(
+        getNext().map(p => p.then(stateNow => {
+          stateLatest = stateNow;
+          return stateNow;
+        }))
+      ).then(() => stateLatest);
     }
 
     // Yield latest state for each changing state.
@@ -183,18 +196,15 @@ export function combineLatestAsyncIterator(
       let nextPromises = getNext();
 
       while ( nextPromises.length > 0 ) {
-        const firstResolved = Promise.race(nextPromises);
-
-        yield await firstResolved; // eslint-disable-line no-await-in-loop
+        let res = Promise.race(nextPromises);
+        res = await res; // eslint-disable-line no-await-in-loop
+        yield res;
         nextPromises = nextPromises.filter(p => !p.done);
       }
     }
 
-    // First make sure every iterator runs at least once.
-    await Promise.all(getNext());
-
     // Yield initial state
-    yield state;
+    yield await getFirstState();
 
     while ( liveIterators.length > 0 ) {
       yield* nextValues();
