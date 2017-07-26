@@ -119,7 +119,7 @@ export type ExecutionContext = {
   fieldResolver: GraphQLFieldResolver<any, any>;
   errors: Array<GraphQLError>;
 
-  // GQL-RxJs: used to store static results on @live request
+  // GQL-Async: used to store static results on @live request
   liveCache: {[key: string]: mixed};
   liveMap: {[key: string]: boolean};
 };
@@ -617,7 +617,7 @@ export function collectFields(
   fields: {[key: string]: Array<FieldNode>},
   visitedFragmentNames: {[key: string]: boolean},
 
-  // GQL-RxJs: helper arguments for supporting @live
+  // GQL-Async: helper arguments for supporting @live
   parentPath: ResponsePath,
   parentLive: ?boolean,
 ): {[key: string]: Array<FieldNode>} {
@@ -633,7 +633,7 @@ export function collectFields(
           fields[name] = [];
         }
 
-        // GQL-RxJs: append to liveMap
+        // GQL-Async: append to liveMap
         const isLive = parentLive || hasLiveDirective(selection.directives);
         const fieldPath = responsePathAsArray(
           addPath(parentPath, name),
@@ -654,7 +654,7 @@ export function collectFields(
           fields,
           visitedFragmentNames,
 
-          // GQL-RxJs: collect live status from fragmant
+          // GQL-Async: collect live status from fragmant
           parentPath,
           parentLive || hasLiveDirective(selection.directives),
         );
@@ -678,7 +678,7 @@ export function collectFields(
           fields,
           visitedFragmentNames,
 
-          // GQL-RxJs: collect live status from fragmant
+          // GQL-Async: collect live status from fragmant
           // for Spread fragments it can be either selective @live on the spread
           // or live fragment on fragment itself.
           parentPath,
@@ -1154,7 +1154,7 @@ function completeAbstractValue(
     returnType.resolveType(result, exeContext.contextValue, info) :
     defaultResolveTypeFn(result, exeContext.contextValue, info, returnType);
 
-  // GQL-RxJs: No Reason to support observable from resolveType..
+  // GQL-Async: No Reason to support asyncIterator from resolveType..
   const promise = getPromise(runtimeType);
   if (promise) {
     return switchMapAsyncIterator(toAsyncIterator(promise),
@@ -1243,7 +1243,7 @@ function completeObjectValue(
   if (returnType.isTypeOf) {
     const isTypeOf = returnType.isTypeOf(result, exeContext.contextValue, info);
 
-    // GQL-RxJs: No Reason to support observable from isTypeOf..
+    // GQL-Async: No Reason to support asyncIterator from isTypeOf..
     const promise = getPromise(isTypeOf);
     if (promise) {
       return switchMapAsyncIterator(toAsyncIterator(promise),
@@ -1337,7 +1337,7 @@ function defaultResolveTypeFn(
     if (type.isTypeOf) {
       const isTypeOfResult = type.isTypeOf(value, context, info);
 
-      // GQL-RxJs: Will no need to handle the promise here because
+      // GQL-Async: Will no need to handle the promise here because
       // it is handled in completeAbstractValue.
       const promise = getPromise(isTypeOfResult);
       if (promise) {
