@@ -1157,7 +1157,7 @@ function completeAbstractValue(
   // GQL-Async: No Reason to support asyncIterator from resolveType..
   const promise = getPromise(runtimeType);
   if (promise) {
-    return switchMapAsyncIterator(toAsyncIterator(promise),
+    return concatAsyncIterator(toAsyncIterator(promise),
       resolvedRuntimeType => toAsyncIterator(completeObjectValue(
         exeContext,
         ensureValidRuntimeType(
@@ -1246,7 +1246,7 @@ function completeObjectValue(
     // GQL-Async: No Reason to support asyncIterator from isTypeOf..
     const promise = getPromise(isTypeOf);
     if (promise) {
-      return switchMapAsyncIterator(toAsyncIterator(promise),
+      return concatAsyncIterator(toAsyncIterator(promise),
         isTypeOfResult => {
           if (!isTypeOfResult) {
             throw invalidReturnTypeError(returnType, result, fieldNodes);
