@@ -10,6 +10,7 @@ import {
   mapAsyncIterator,
   defferAsyncIterator,
   catchErrorsAsyncIterator,
+  toAsyncIterator,
 } from '../asyncIterator';
 
 async function asyncToArray(iterable) {
@@ -59,6 +60,45 @@ describe('combineLatestAsyncIterator', () => {
     ]);
   });
 
+  it('handles 1 short iterator', async () => {
+    const iterators = [
+      createAsyncIterator([ 1 ]),
+    ];
+
+    const result = await asyncToArray(combineLatestAsyncIterator(iterators));
+
+    expect(result).to.deep.equal([
+      [ 1 ],
+    ]);
+  });
+
+  it('handles 2 short iterators', async () => {
+    const iterators = [
+      createAsyncIterator([ 1 ]),
+      createAsyncIterator([ 2 ]),
+    ];
+
+    const result = await asyncToArray(combineLatestAsyncIterator(iterators));
+
+    expect(result).to.deep.equal([
+      [ 1, 2 ],
+    ]);
+  });
+
+  it('handles 2 unligned iterators', async () => {
+    const iterators = [
+      createAsyncIterator([ 1 ]),
+      createAsyncIterator([ 2, 3 ]),
+    ];
+
+    const result = await asyncToArray(combineLatestAsyncIterator(iterators));
+
+    expect(result).to.deep.equal([
+      [ 1, 2 ],
+      [ 1, 3 ],
+    ]);
+  });
+
   it('also handles 3 iterators', async () => {
     const iterators = [
       createAsyncIterator([ promiseGen(1, 50), 2 ]),
@@ -104,6 +144,17 @@ describe('asyncIteratorForObject', () => {
       { a: 2, b: 3, c: 6 },
       { a: 2, b: 4, c: 6 },
       { a: 2, b: 5, c: 6 },
+    ]);
+  });
+
+  it('works as expected for one value as well', async () => {
+    const iterators = {
+      a: createAsyncIterator([ 1 ]),
+    };
+    const result = await asyncToArray(asyncIteratorForObject(iterators));
+
+    expect(result).to.deep.equal([
+      { a: 1 },
     ]);
   });
 });
@@ -205,5 +256,17 @@ describe('catchErrorsAsyncIterator', () => {
     } catch (e) {
       expect(e.message).to.equal('hold');
     }
+  });
+});
+
+describe('async iterator operator mixing', () => {
+  it('asyncIteratorForObject From toAsyncIterator Promise', async () => {
+    const value = toAsyncIterator(promiseGen('Works'));
+    const iterator = asyncIteratorForObject({
+      test: takeFirstAsyncIterator(value),
+    });
+
+    const result = await asyncToArray(iterator);
+    expect(result).to.deep.equal([ { test: 'Works' } ]);
   });
 });

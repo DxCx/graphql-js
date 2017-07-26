@@ -145,15 +145,32 @@ export function toAsyncIterator(result: mixed): AsyncIterable<mixed> {
   return createAsyncIterator([ result ]);
 }
 
+function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
+  if ( pArr.length === 0 ) {
+    return Promise.reject(new Error('Cannot Race with zero Promises'));
+  }
+  const racePromises = pArr.map((p, i) => p.then(value => ({ i, value })));
+
+  return Promise.race(racePromises).then(({i, value }) => {
+    // Cleanup the finished one.
+    pArr.splice(i, 1);
+    return value;
+  });
+}
+
 /**
  * Utility function to combineLatest asyncIterator results
  */
 export function combineLatestAsyncIterator(
   iterables: Array<AsyncIterable<mixed>>
 ): AsyncIterable<Array<mixed>> {
-  let liveIterators:Array<AsyncIterator<mixed>> = iterables.map(
+  const allIterators = iterables.map(
     iter => getAsyncIterator(iter)
-  );
+  ).map((iter: AsyncIterator<mixed> & { done?: boolean }) => {
+    iter.done = false;
+    return iter;
+  });
+  let doneIterators = 0;
 
   async function* combineLatestGenerator() {
     // The state for this combination.
@@ -161,21 +178,23 @@ export function combineLatestAsyncIterator(
 
     // Generate next Iteration.
     function getNext() {
-      return liveIterators.map((iter, i) => {
-        const p:(Promise<Array<mixed>> & { done?: boolean }) =
-          iter.next().then(({value, done}) => {
-            if (done) {
-              liveIterators = liveIterators.filter(x => x !== iter);
-            } else {
+      return allIterators
+        .filter(iter => iter.done !== true)
+        .map((iter, i) => {
+          const p: Promise<IteratorResult<Array<mixed>, void>> =
+            iter.next().then(({value, done}) => {
+              if (done) {
+                iter.done = true;
+                doneIterators += 1;
+                return { done: true };
+              }
+
               state[i] = value;
-            }
+              return iteratorResult([ ...state ]);
+            });
 
-            p.done = true;
-            return [ ...state ];
-          });
-
-        return p;
-      });
+          return p;
+        });
     }
 
     function getFirstState() {
@@ -185,7 +204,9 @@ export function combineLatestAsyncIterator(
 
       return Promise.all(
         getNext().map(p => p.then(stateNow => {
-          stateLatest = stateNow;
+          if ( !stateNow.done ) {
+            stateLatest = stateNow.value;
+          }
           return stateNow;
         }))
       ).then(() => stateLatest);
@@ -193,20 +214,21 @@ export function combineLatestAsyncIterator(
 
     // Yield latest state for each changing state.
     async function* nextValues() {
-      let nextPromises = getNext();
+      const nextPromises = getNext();
 
       while ( nextPromises.length > 0 ) {
-        let res = Promise.race(nextPromises);
+        let res = promiseRaceWithCleanup(nextPromises);
         res = await res; // eslint-disable-line no-await-in-loop
-        yield res;
-        nextPromises = nextPromises.filter(p => !p.done);
+        if ( !res.done ) {
+          yield res.value;
+        }
       }
     }
 
     // Yield initial state
     yield await getFirstState();
 
-    while ( liveIterators.length > 0 ) {
+    while ( doneIterators < allIterators.length ) {
       yield* nextValues();
     }
   }
