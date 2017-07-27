@@ -354,8 +354,8 @@ export function switchMapAsyncIterator<T, U>(
       const inner = getAsyncIterator(switchMapResult);
 
       let $return = () => ({ done: true });
-      if (typeof iterator.return === 'function') {
-        $return = iterator.return;
+      if (typeof inner.return === 'function') {
+        $return = inner.return;
       }
 
       let nextPromise;
