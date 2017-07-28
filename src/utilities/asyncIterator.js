@@ -8,6 +8,10 @@ import {
   forAwaitEach,
 } from 'iterall';
 
+const ITER_DONE = Promise.resolve({
+  done: true, value: undefined,
+});
+
 /**
  * Given an AsyncIterable and a callback function, return an AsyncIterator
  * which produces values mapped via calling the callback function.
@@ -39,8 +43,7 @@ export function mapAsyncIterator<T, U>(
     },
     return() {
       return $return ?
-        $return.call(iterator).then(mapResult) :
-        Promise.resolve({ value: undefined, done: true });
+        $return.call(iterator).then(mapResult) : ITER_DONE;
     },
     throw(error) {
       if (typeof iterator.throw === 'function') {
@@ -131,12 +134,16 @@ export function AsyncGeneratorFromObserver<T>(
 
   return {
     next() {
+      if ( !cleanupFunction ) {
+        this._invoke();
+      }
+
       if (completedPromises.length > 0) {
         return completedPromises.shift();
       }
 
       if ( done ) {
-        return Promise.resolve({ done: true });
+        return ITER_DONE;
       }
 
       return new Promise((r, e) => sentPromises.push([ r, e ]));
@@ -145,12 +152,9 @@ export function AsyncGeneratorFromObserver<T>(
       return this._cleanup(Promise.reject(e));
     },
     return() {
-      return this._cleanup(Promise.resolve({ done: true }));
+      return this._cleanup(ITER_DONE);
     },
     [$$asyncIterator]() {
-      if ( !cleanupFunction ) {
-        this._invoke();
-      }
       return this;
     },
     _cleanup(finalPromise: Promise<{ done: true }>) {
@@ -194,7 +198,7 @@ export function AsyncGeneratorFromObserver<T>(
         complete: () => {
           done = true;
           cleanupFunction = undefined;
-          this._cleanup(Promise.resolve({ done: true }));
+          this._cleanup(ITER_DONE);
         },
       });
     }
@@ -274,15 +278,17 @@ export function combineLatestAsyncIterator(
 
     // Generate next Iteration.
     function getNext() {
-      return allIterators
-        .filter(iter => iter.done !== true)
+      return ((allIterators
         .map((iter, i) => {
-          const p: Promise<IteratorResult<Array<mixed>, void>> =
-            iter.next().then(({value, done}) => {
+          if (iter.done) {
+            return null;
+          }
+
+          const p = iter.next().then(({value, done}) => {
               if (done) {
                 iter.done = true;
                 doneIterators += 1;
-                return { done: true };
+                return ITER_DONE;
               }
 
               state[i] = value;
@@ -290,7 +296,10 @@ export function combineLatestAsyncIterator(
             });
 
           return p;
-        });
+        })
+        .filter(v => v !== null): any): Array<Promise<
+          IteratorResult<Array<mixed>, void>
+        >>);
     }
 
     function getFirstState() {
@@ -367,16 +376,20 @@ export function concatAsyncIterator<T>(
     let nextIterator: ?AsyncIterator<T>;
     let latestValue: T;
     let firstCompleted = false;
+    let valueEmitted = false;
     let nextCompleted = true;
 
     forAwaitEach(iterator, value => {
       latestValue = value;
+      valueEmitted = true;
     })
     .then(() => {
       firstCompleted = true;
-      return concatCallback(latestValue);
-    })
-    .then((next: AsyncIterable<T> | T) => {
+      if ( !valueEmitted ) {
+        return;
+      }
+
+      const next: AsyncIterable<T> | T = concatCallback(latestValue);
       nextIterator = getAsyncIterator(next);
       if ( nextIterator ) {
         nextCompleted = false;
@@ -501,7 +514,7 @@ export function switchMapAsyncIterator<T, U>(
         const switchMapResult = switchMapCallback(outerValue.value);
         const inner = getAsyncIterator(switchMapResult);
 
-        let $return = () => ({ done: true });
+        let $return = () => ITER_DONE;
         if (typeof inner.return === 'function') {
           $return = inner.return;
         }
@@ -518,10 +531,17 @@ export function switchMapAsyncIterator<T, U>(
         }));
 
         const nextInner = () => {
-          nextPromise = inner.next();
+          nextPromise = inner.next()
+            .then(result => {
+              if ( !result.done ) {
+                observer.next(result.value);
+              }
+
+              return result;
+            });
 
           const resProm = (!outerValue.done ? Promise.race([
-            switchPromise, nextPromise
+            switchPromise, nextPromise,
           ]) : nextPromise);
 
           return resProm.then((result: IteratorResult<U, void>) => {
@@ -529,7 +549,6 @@ export function switchMapAsyncIterator<T, U>(
               return switchPromise;
             }
 
-            observer.next(result.value);
             return nextInner();
           });
         };

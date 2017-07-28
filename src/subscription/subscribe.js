@@ -15,7 +15,7 @@ import {
   assertValidExecutionArguments,
   buildExecutionContext,
   collectFields,
-  execute,
+  executeReactive,
   getFieldDef,
   getOperationRootType,
   buildResolveInfo,
@@ -23,7 +23,7 @@ import {
 } from '../execution/execute';
 import { GraphQLSchema } from '../type/schema';
 import invariant from '../jsutils/invariant';
-import mapAsyncIterator from './mapAsyncIterator';
+import { switchMapAsyncIterator } from '../utilities/asyncIterator';
 
 import type { ExecutionResult } from '../execution/execute';
 import type { DocumentNode } from '../language/ast';
@@ -122,9 +122,9 @@ function subscribeImpl(
   // the GraphQL specification. The `execute` function provides the
   // "ExecuteSubscriptionEvent" algorithm, as it is nearly identical to the
   // "ExecuteQuery" algorithm, for which `execute` is also used.
-  return mapAsyncIterator(
+  return switchMapAsyncIterator(
     subscription,
-    payload => execute(
+    payload => executeReactive(
       schema,
       document,
       payload,

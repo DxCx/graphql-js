@@ -10,12 +10,14 @@
 
 import { parse } from './language/parser';
 import { validate } from './validation/validate';
-import { executeReactive } from './execution/execute';
-import { createAsyncIterator } from 'iterall';
 import type { Source } from './language/source';
 import type { GraphQLFieldResolver } from './type/definition';
 import type { GraphQLSchema } from './type/schema';
 import type { ExecutionResult } from './execution/execute';
+import { createAsyncIterator } from 'iterall';
+import { executeReactive } from './execution/execute';
+import { subscribe } from './subscription/subscribe';
+import { getOperationAST } from './utilities/getOperationAST';
 
 /**
  * This is the primary entry point function for fulfilling GraphQL operations
@@ -78,23 +80,25 @@ export function graphql(
   // Extract arguments from object args if provided.
   const args = arguments.length === 1 ? argsOrSchema : undefined;
   const result = args ?
-    graphqlReactive(
+    graphqlImpl(
       args.schema,
       args.source,
       args.rootValue,
       args.contextValue,
       args.variableValues,
       args.operationName,
-      args.fieldResolver
+      args.fieldResolver,
+      true
     ) :
-    graphqlReactive(
+    graphqlImpl(
       argsOrSchema,
       source,
       rootValue,
       contextValue,
       variableValues,
       operationName,
-      fieldResolver
+      fieldResolver,
+      true
     );
 
   return result.next().then(v => {
@@ -175,7 +179,8 @@ export function graphqlReactive(
       args.contextValue,
       args.variableValues,
       args.operationName,
-      args.fieldResolver
+      args.fieldResolver,
+      false,
     ) :
     graphqlImpl(
       schema,
@@ -184,7 +189,8 @@ export function graphqlReactive(
       contextValue,
       variableValues,
       operationName,
-      fieldResolver
+      fieldResolver,
+      false,
     );
 }
 
@@ -195,7 +201,8 @@ function graphqlImpl(
   contextValue,
   variableValues,
   operationName,
-  fieldResolver
+  fieldResolver,
+  noSubscriptions,
 ) {
   // Parse
   let document;
@@ -211,7 +218,13 @@ function graphqlImpl(
     return createAsyncIterator([ { errors: validationErrors } ]);
   }
 
-  return executeReactive(
+  const operation = getOperationAST(document, operationName);
+  const isSubscription = !noSubscriptions &&
+    operation &&
+    operation.operation === 'subscription';
+  const executor = isSubscription ? subscribe : executeReactive;
+
+  return executor(
     schema,
     document,
     rootValue,

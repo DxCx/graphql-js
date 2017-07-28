@@ -7,6 +7,7 @@ import {
   concatAsyncIterator,
   asyncIteratorForObject,
   switchMapAsyncIterator,
+  AsyncGeneratorFromObserver,
   mapAsyncIterator,
   defferAsyncIterator,
   catchErrorsAsyncIterator,
@@ -187,11 +188,21 @@ describe('switchMapAsyncIterator', () => {
       promiseGen(1, 50),
       promiseGen(2, 200),
     ]);
-    const innerGen = () => createAsyncIterator([
-      promiseGen(3, 100),
-      4,
-      promiseGen(5, 200),
-    ]);
+    const innerGen = () => AsyncGeneratorFromObserver(observer => {
+      const numbers = [ 3, 4 ,5 ];
+      const time = [ 100, 110, 200 ];
+
+      const timers = numbers.map((num, i) => {
+        return setTimeout(() => observer.next(num), time[i]);
+      });
+      timers.push(setTimeout(() => observer.complete(), 210));
+
+      return () => {
+        timers.forEach(timer => {
+          clearTimeout(timer);
+        });
+      };
+    });
     const switched = switchMapAsyncIterator(outer, outRes => {
       return mapAsyncIterator(innerGen(), inRes => [ outRes, inRes ]);
     });
