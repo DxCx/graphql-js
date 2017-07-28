@@ -67,7 +67,6 @@ import {
 } from '../type/reactiveDirectives';
 
 import {
-  $$asyncIterator,
   getAsyncIterator,
   isAsyncIterable,
 } from 'iterall';
@@ -1547,14 +1546,6 @@ function addLocatedErrorAsyncIterator<T>(
 ): AsyncIterable<T> {
   return catchErrorsAsyncIterator(
     iterable,
-    error => {
-      async function* errorGenerator() {
-        throw locatedError(error, fieldNodes, responsePathAsArray(path));
-      }
-
-      return ({
-        [$$asyncIterator]: errorGenerator,
-      }: AsyncIterable<T>);
-    }
+    error => locatedError(error, fieldNodes, responsePathAsArray(path)),
   );
 }

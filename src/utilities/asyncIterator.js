@@ -5,6 +5,7 @@ import {
   getAsyncIterator,
   isAsyncIterable,
   $$asyncIterator,
+  forAwaitEach,
 } from 'iterall';
 
 /**
@@ -110,6 +111,96 @@ function objectContainsAsyncIterator(
   return false;
 }
 
+export type AsyncGeneratorFromObserverParams<T> = {
+  next: (value: T | Promise<T>) => void,
+  error: (error: Error) => void,
+  complete: () => void,
+};
+export type AsyncGeneratorFromObserverFunction<T> =
+  (observer: AsyncGeneratorFromObserverParams<T>) => () => void;
+
+export function AsyncGeneratorFromObserver<T>(
+  generatorFunction: AsyncGeneratorFromObserverFunction<T>
+): AsyncGenerator<T, void, void> {
+  const completedPromises: Array<Promise<IteratorResult<T, void>>> = [];
+  // Hold Resolve/Reject pair.
+  const sentPromises: Array<Array<(v: any) => void>> = [];
+  let done: boolean = false;
+  let cleanupFunction: ?(() => void);
+  const generator: AsyncGeneratorFromObserverFunction<T> = generatorFunction;
+
+  return {
+    next() {
+      if (completedPromises.length > 0) {
+        return completedPromises.shift();
+      }
+
+      if ( done ) {
+        return Promise.resolve({ done: true });
+      }
+
+      return new Promise((r, e) => sentPromises.push([ r, e ]));
+    },
+    throw(e?: any) {
+      return this._cleanup(Promise.reject(e));
+    },
+    return() {
+      return this._cleanup(Promise.resolve({ done: true }));
+    },
+    [$$asyncIterator]() {
+      if ( !cleanupFunction ) {
+        this._invoke();
+      }
+      return this;
+    },
+    _cleanup(finalPromise: Promise<{ done: true }>) {
+      let p = Promise.resolve();
+      if ( cleanupFunction ) {
+        p = Promise.resolve(cleanupFunction());
+        cleanupFunction = undefined;
+      }
+      return p.then(() => {
+        while (sentPromises.length > 0) {
+          const [ resolve, ] = sentPromises.shift();
+          resolve(finalPromise);
+        }
+
+        return finalPromise;
+      });
+    },
+    _invoke() {
+      cleanupFunction = generator({
+        next: (value: T | Promise<T>) => {
+          const item = Promise.resolve(value)
+            .then((resValue: T) => iteratorResult(resValue));
+
+          if (sentPromises.length > 0) {
+            const [ resolve, ] = sentPromises.shift();
+
+            resolve(item);
+          } else {
+            completedPromises.push(Promise.resolve(item));
+          }
+        },
+        error: error => {
+          if (sentPromises.length > 0) {
+            const [ , reject ] = sentPromises.shift();
+
+            reject(error);
+          } else {
+            completedPromises.push(Promise.reject(error));
+          }
+        },
+        complete: () => {
+          done = true;
+          cleanupFunction = undefined;
+          this._cleanup(Promise.resolve({ done: true }));
+        },
+      });
+    }
+  };
+}
+
 /**
  * Utility function used to convert all possible result types into AsyncIterator
  */
@@ -164,15 +255,20 @@ function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
 export function combineLatestAsyncIterator(
   iterables: Array<AsyncIterable<mixed>>
 ): AsyncIterable<Array<mixed>> {
-  const allIterators = iterables.map(
-    iter => getAsyncIterator(iter)
-  ).map((iter: AsyncIterator<mixed> & { done?: boolean }) => {
-    iter.done = false;
-    return iter;
-  });
-  let doneIterators = 0;
+  return AsyncGeneratorFromObserver(observer => {
+    const allIterators = iterables.map(
+      iter => getAsyncIterator(iter)
+    )
+    .filter(iter => Boolean(iter))
+    .map((iter: AsyncIterator<mixed> & {
+      return?: () => Promise<void>,
+      done?: boolean
+    }) => {
+      iter.done = false;
+      return iter;
+    });
+    let doneIterators = 0;
 
-  async function* combineLatestGenerator() {
     // The state for this combination.
     const state = [];
 
@@ -213,29 +309,50 @@ export function combineLatestAsyncIterator(
     }
 
     // Yield latest state for each changing state.
-    async function* nextValues() {
+    function nextValues() {
       const nextPromises = getNext();
-
-      while ( nextPromises.length > 0 ) {
-        let res = promiseRaceWithCleanup(nextPromises);
-        res = await res; // eslint-disable-line no-await-in-loop
-        if ( !res.done ) {
-          yield res.value;
+      const next = () => {
+        if ( nextPromises.length === 0 ) {
+          return Promise.resolve();
         }
-      }
+
+        return promiseRaceWithCleanup(nextPromises)
+        .then(res => {
+          if ( !res.done ) {
+            observer.next(res.value);
+          }
+        }).then(next);
+      };
+
+      return next();
     }
 
     // Yield initial state
-    yield await getFirstState();
+    getFirstState().then(initialState => {
+      observer.next(initialState);
 
-    while ( doneIterators < allIterators.length ) {
-      yield* nextValues();
-    }
-  }
+      const next = () => {
+        if ( doneIterators >= allIterators.length ) {
+          return;
+        }
 
-  return {
-    [$$asyncIterator]: combineLatestGenerator,
-  };
+        return nextValues().then(next);
+      };
+
+      return next();
+    })
+    .then(() => observer.complete(), e => observer.error(e));
+
+    return () => {
+      Promise.all(allIterators
+        .filter(i => i.done !== true)
+        .map(iter => {
+          if ( typeof iter.return === 'function' ) {
+            return iter.return();
+          }
+        }));
+    };
+  });
 }
 
 /**
@@ -245,33 +362,51 @@ export function concatAsyncIterator<T>(
   iterable: AsyncIterable<T>,
   concatCallback: (latestValue: ?T) => AsyncIterable<T> | T
 ): AsyncIterable<T> {
-  const iterator = getAsyncIterator(iterable);
-
-  async function* concatGenerator() {
+  return AsyncGeneratorFromObserver(observer => {
+    const iterator = getAsyncIterator(iterable);
+    let nextIterator: ?AsyncIterator<T>;
     let latestValue: T;
-    const infinateLoop = true;
+    let firstCompleted = false;
+    let nextCompleted = true;
 
-    while ( infinateLoop ) {
-      const i = await iterator.next(); // eslint-disable-line no-await-in-loop
-      if ( i.done ) {
-        break;
+    forAwaitEach(iterator, value => {
+      latestValue = value;
+    })
+    .then(() => {
+      firstCompleted = true;
+      return concatCallback(latestValue);
+    })
+    .then((next: AsyncIterable<T> | T) => {
+      nextIterator = getAsyncIterator(next);
+      if ( nextIterator ) {
+        nextCompleted = false;
+        return forAwaitEach(nextIterator, value => {
+          observer.next(value);
+        })
+        .then(() => {
+          nextCompleted = true;
+        });
       }
 
-      latestValue = i.value;
-    }
+      observer.next(((next: any): T));
+    })
+    .then(() => observer.complete(), e => observer.error(e));
 
-    const next: AsyncIterable<T> | T = concatCallback(latestValue);
-    const nextIterator: ?AsyncIterator<T> = getAsyncIterator(next);
-    if ( nextIterator ) {
-      yield* nextIterator;
-    } else {
-      yield ((next: any): T);
-    }
-  }
+    return () => {
+      // No way to cancel promises...
+      if ( (!firstCompleted) &&
+           (iterator) &&
+           (typeof iterator.return === 'function') ) {
+        iterator.return();
+      }
 
-  return {
-    [$$asyncIterator]: concatGenerator,
-  };
+      if ( (!nextCompleted) &&
+           (nextIterator) &&
+           (typeof nextIterator.return === 'function') ) {
+        nextIterator.return();
+      }
+    };
+  });
 }
 
 /**
@@ -280,20 +415,27 @@ export function concatAsyncIterator<T>(
 export function takeFirstAsyncIterator<T>(
   iterable: AsyncIterable<T>,
 ): AsyncIterable<?T> {
-  const iterator = getAsyncIterator(iterable);
+  return new AsyncGeneratorFromObserver(observer => {
+    const iterator = getAsyncIterator(iterable);
 
-  async function* takeFirstGenerator() {
-    // take only first promise.
-    yield await iterator.next().then(({ value }) => value);
+    iterator.next().then(({ done, value }) => {
+      if ( !done ) {
+        let $return = Promise.resolve();
+        if ( typeof iterator.return === 'function' ) {
+          $return = Promise.resolve(iterator.return());
+        }
+        observer.next($return.then(() => value));
+      }
+      observer.complete();
+    }, e => observer.error(e));
 
-    if ( typeof iterator.return === 'function' ) {
-      iterator.return();
-    }
-  }
-
-  return {
-    [$$asyncIterator]: takeFirstGenerator,
-  };
+    return () => {
+      // No way to cancel promises...
+      if ( iterator && typeof iterator.return === 'function' ) {
+        iterator.return();
+      }
+    };
+  });
 }
 
 /**
@@ -301,38 +443,41 @@ export function takeFirstAsyncIterator<T>(
  */
 export function catchErrorsAsyncIterator<T>(
   iterable: AsyncIterable<T>,
-  errorHandler: (error: any) => AsyncIterable<T>
+  errorHandler: (error: any) => Error | AsyncIterable<T>
 ): AsyncIterable<T> {
-  async function* catchGenerator() {
-    const iterator = getAsyncIterator(iterable);
-
-    let err: ?AsyncIterable<T>;
-    let hasError = false;
-    const infinateLoop = true;
-
-    while (infinateLoop) {
-      let c:IteratorResult<T, void>;
-
-      try {
-        c = await iterator.next(); // eslint-disable-line no-await-in-loop
-        if (c.done) { break; }
-      } catch (e) {
-        err = await errorHandler(e); // eslint-disable-line no-await-in-loop
-        hasError = true;
-        break;
+  return AsyncGeneratorFromObserver(observer => {
+    let iterator = getAsyncIterator(iterable);
+    forAwaitEach(iterator, value => {
+      observer.next(value);
+    }).then(() => {
+      observer.complete();
+    }, e => {
+      let $return = Promise.resolve();
+      if ( iterator && typeof iterator.return === 'function' ) {
+        $return = Promise.resolve(iterator.return());
+        iterator = undefined;
       }
 
-      yield c.value;
-    }
+      return $return.then(() => errorHandler(e))
+        .then((err: Error | AsyncIterable<T>) => {
+          iterator = ((getAsyncIterator(err): any): ?AsyncIterator<T>);
+          if ( !iterator ) {
+            throw err;
+          }
 
-    if (hasError && err) {
-      yield *err;
-    }
-  }
+          return forAwaitEach(iterator, value => {
+            observer.next(value);
+          });
+        })
+        .then(() => observer.complete(), e2 => observer.error(e2));
+    });
 
-  return {
-    [$$asyncIterator]: catchGenerator,
-  };
+    return () => {
+      if ( iterator && typeof iterator.return === 'function' ) {
+        iterator.return();
+      }
+    };
+  });
 }
 
 /**
@@ -342,57 +487,67 @@ export function switchMapAsyncIterator<T, U>(
   iterable: AsyncIterable<T>,
   switchMapCallback: (value: T) => AsyncIterable<U>
 ): AsyncIterable<U> {
-  const iterator = getAsyncIterator(iterable);
-
-  async function* switchMapGenerator() {
-    const infinateLoop = true;
+  return AsyncGeneratorFromObserver(observer => {
+    const iterator = getAsyncIterator(iterable);
     let outerValue:IteratorResult<T, void>;
 
-    outerValue = await iterator.next();
-    while (!outerValue.done) {
-      const switchMapResult = switchMapCallback(outerValue.value);
-      const inner = getAsyncIterator(switchMapResult);
-
-      let $return = () => ({ done: true });
-      if (typeof inner.return === 'function') {
-        $return = inner.return;
-      }
-
-      let nextPromise;
-
-      const switchPromise = iterator.next().then((newOuter => {
-        outerValue = newOuter;
-        if ( newOuter.done ) {
-          return nextPromise;
+    iterator.next().then(initialValue => {
+      outerValue = initialValue;
+      const next = () => {
+        if ( outerValue.done ) {
+          return;
         }
 
-        return $return.call(inner);
-      }));
+        const switchMapResult = switchMapCallback(outerValue.value);
+        const inner = getAsyncIterator(switchMapResult);
 
-      while (infinateLoop) {
-        nextPromise = inner.next();
-
-        const resProm = (!outerValue.done ? Promise.race([
-          switchPromise, nextPromise
-        ]) : nextPromise);
-        const result: IteratorResult<U, void> =
-          await resProm; // eslint-disable-line no-await-in-loop
-
-        if ( result.done ) {
-          break;
+        let $return = () => ({ done: true });
+        if (typeof inner.return === 'function') {
+          $return = inner.return;
         }
 
-        yield result.value;
+        let nextPromise;
+
+        const switchPromise = iterator.next().then((newOuter => {
+          outerValue = newOuter;
+          if ( newOuter.done ) {
+            return nextPromise;
+          }
+
+          return $return.call(inner);
+        }));
+
+        const nextInner = () => {
+          nextPromise = inner.next();
+
+          const resProm = (!outerValue.done ? Promise.race([
+            switchPromise, nextPromise
+          ]) : nextPromise);
+
+          return resProm.then((result: IteratorResult<U, void>) => {
+            if ( result.done ) {
+              return switchPromise;
+            }
+
+            observer.next(result.value);
+            return nextInner();
+          });
+        };
+
+        // makes sure switch promise executed.
+        return nextInner().then(() => next());
+      };
+
+      return next();
+    })
+    .then(() => observer.complete(), e => observer.error(e));
+
+    return () => {
+      if ( iterator && typeof iterator.return === 'function' ) {
+        iterator.return();
       }
-
-      // makes sure switch promise executed.
-      await switchPromise; // eslint-disable-line no-await-in-loop
-    }
-  }
-
-  return {
-    [$$asyncIterator]: switchMapGenerator,
-  };
+    };
+  });
 }
 
 /**
@@ -401,19 +556,24 @@ export function switchMapAsyncIterator<T, U>(
 export function defferAsyncIterator<T>(
   iterable: AsyncIterable<T>,
 ): AsyncIterable<?T> {
-  async function* defferGenerator() {
+  return AsyncGeneratorFromObserver(observer => {
     const iterator = getAsyncIterator(iterable);
 
     // reply with undefine as initial result.
-    yield undefined;
+    observer.next(undefined);
 
-    // yield the origial iterator.
-    yield* iterator;
-  }
+    // play the original iterable.
+    forAwaitEach(iterator, value => {
+      observer.next(value);
+    })
+    .then(() => observer.complete(), e => observer.error(e));
 
-  return {
-    [$$asyncIterator]: defferGenerator,
-  };
+    return () => {
+      if ( iterator && typeof iterator.return === 'function' ) {
+        iterator.return();
+      }
+    };
+  });
 }
 
 /**
