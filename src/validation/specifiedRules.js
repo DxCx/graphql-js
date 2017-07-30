@@ -90,6 +90,11 @@ import {
 // Spec Section: "Input Object Field Uniqueness"
 import { UniqueInputFieldNames } from './rules/UniqueInputFieldNames';
 
+// Reactive-Directives: Should not allow reactive support for mutations.
+import {
+  NoReactiveMutations
+} from './rules/NoReactiveMutations';
+
 import type { ValidationContext } from './index';
 
 /**
@@ -125,4 +130,5 @@ export const specifiedRules: Array<(context: ValidationContext) => any> = [
   VariablesInAllowedPosition,
   OverlappingFieldsCanBeMerged,
   UniqueInputFieldNames,
+  NoReactiveMutations,
 ];

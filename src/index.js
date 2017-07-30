@@ -406,3 +406,6 @@ export {
 export {
   graphqlReactive,
 } from './graphql';
+export {
+  NoReactiveMutationsRule
+} from './validation';

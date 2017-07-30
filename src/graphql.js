@@ -19,6 +19,8 @@ import { executeReactive } from './execution/execute';
 import { subscribe } from './subscription/subscribe';
 import { getOperationAST } from './utilities/getOperationAST';
 
+import { specifiedRules } from './validation/specifiedRules';
+
 /**
  * This is the primary entry point function for fulfilling GraphQL operations
  * by parsing, validating, and executing a GraphQL document along side a
@@ -213,7 +215,7 @@ function graphqlImpl(
   }
 
   // Validate
-  const validationErrors = validate(schema, document);
+  const validationErrors = validate(schema, document, specifiedRules);
   if (validationErrors.length > 0) {
     return createAsyncIterator([ { errors: validationErrors } ]);
   }
