@@ -144,7 +144,7 @@ export function AsyncGeneratorFromObserver<T>(
 
   return {
     next() {
-      if ( !cleanupFunction ) {
+      if ( !done && !cleanupFunction ) {
         this._invoke();
       }
 
@@ -159,15 +159,28 @@ export function AsyncGeneratorFromObserver<T>(
       return new Promise((r, e) => sentPromises.push([ r, e ]));
     },
     throw(e?: any) {
+      if ( done ) {
+        return ITER_DONE;
+      }
+
       return this._cleanup(Promise.reject(e));
     },
     return() {
       return this._cleanup(ITER_DONE);
     },
     [$$asyncIterator]() {
+      if ( !cleanupFunction ) {
+        this._invoke();
+      }
+
       return this;
     },
     _cleanup(finalPromise: Promise<{ done: true }>) {
+      if ( done ) {
+        return ITER_DONE;
+      }
+
+      done = true;
       let p = Promise.resolve();
       if ( cleanupFunction ) {
         p = Promise.resolve(cleanupFunction());
@@ -179,12 +192,19 @@ export function AsyncGeneratorFromObserver<T>(
           resolve(finalPromise);
         }
 
+        completedPromises.length = 0;
         return finalPromise;
       });
     },
     _invoke() {
+      done = false;
+
       cleanupFunction = generator({
         next: (value: T | Promise<T>) => {
+          if ( done ) {
+            return;
+          }
+
           const item = Promise.resolve(value)
             .then((resValue: T) => iteratorResult(resValue));
 
@@ -197,6 +217,10 @@ export function AsyncGeneratorFromObserver<T>(
           }
         },
         error: error => {
+          if ( done ) {
+            return;
+          }
+
           if (sentPromises.length > 0) {
             const [ , reject ] = sentPromises.shift();
 
@@ -206,7 +230,10 @@ export function AsyncGeneratorFromObserver<T>(
           }
         },
         complete: () => {
-          done = true;
+          if ( done ) {
+            return;
+          }
+
           cleanupFunction = undefined;
           this._cleanup(ITER_DONE);
         },
