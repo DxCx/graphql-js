@@ -122,6 +122,16 @@ export type AsyncGeneratorFromObserverParams<T> = {
 export type AsyncGeneratorFromObserverFunction<T> =
   (observer: AsyncGeneratorFromObserverParams<T>) => () => void;
 
+/*
+ * Given provider function (With the same observer interface as observable)
+ * this function will return AsyncIterator that emit the values given.
+ * observer.next( ) will resolve AsyncIteartor.next
+ * observer.error( ) will reject AsyncIterator.next
+ * observer.complete( ) will emit done.
+ *
+ * provider function should return a teardown function that will be called
+ * if async iterator was terminated before complete.
+ */
 export function AsyncGeneratorFromObserver<T>(
   generatorFunction: AsyncGeneratorFromObserverFunction<T>
 ): AsyncGenerator<T, void, void> {
@@ -262,7 +272,19 @@ function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
 }
 
 /**
- * Utility function to combineLatest asyncIterator results
+ * Utility function to combineLatest asyncIterator results.
+ *
+ * Combine latest is splitted into 2 parts:
+ * init - In init phase we will emit the first result, which is
+ * emitted only after all iterators returned at least one value.
+ * The emitted values are ordered just like they came in.
+ * very similar to Promise.all
+ *
+ * progress - after that, for each new value emitted, the value
+ * will be updated on the right index, and latest state will be emitted.
+ *
+ * when all input iterators are complete, the retuned iterator
+ * will be completed.
  */
 export function combineLatestAsyncIterator(
   iterables: Array<AsyncIterable<mixed>>
@@ -374,6 +396,13 @@ export function combineLatestAsyncIterator(
 
 /**
  * Utility function to concat asyncIterator results
+ *
+ * this function is used to chain asyncIterators.
+ * once given iterable is completed,
+ * it's latest value will be given to concatCallback
+ * so it can compute a new AsyncIterable and chain to it.
+ *
+ * if no value will be emitted by iterable, concatCallback wont be called.
  */
 export function concatAsyncIterator<T, U>(
   iterable: AsyncIterable<T>,
@@ -432,6 +461,7 @@ export function concatAsyncIterator<T, U>(
 
 /**
  * Utility function to take only first result of asyncIterator results
+ * and then complete.
  */
 export function takeFirstAsyncIterator<T>(
   iterable: AsyncIterable<T>,
@@ -503,6 +533,15 @@ export function catchErrorsAsyncIterator<T>(
 
 /**
  * Utility function to switchMap over asyncIterator
+ *
+ * given outer iterable (master)
+ * for each value emitted, switchMapCallback will be called
+ * to calculate the next iterator to emit values.
+ * if a new value emitted by outer iterable before latest inner complete
+ * inner iterator will return(); and then a new inner will be recalculated.
+ *
+ * the returned AsyncIterable will complete only once both
+ * iterable and latest inner observable were completed.
  */
 export function switchMapAsyncIterator<T, U>(
   iterable: AsyncIterable<T>,
@@ -579,6 +618,10 @@ export function switchMapAsyncIterator<T, U>(
 
 /**
  * Utility function to deffer over asyncIterator
+ *
+ * this function is used to defer iterable result
+ * by first returning undefined, and only after that execute
+ * the original iterable.
  */
 export function defferAsyncIterator<T>(
   iterable: AsyncIterable<T>,
@@ -604,11 +647,12 @@ export function defferAsyncIterator<T>(
 }
 
 /**
- * This function transforms a JS object `{[key: string]: Promise<T>}` into
- * a `Promise<{[key: string]: T}>`
+ * This function transforms a JS object
+ * `{[key: string]: Promise<T> | AsyncIterable<T>}` into
+ * a `AsyncIterable<{[key: string]: T}>`
  *
  * This is akin to bluebird's `Promise.props`, but implemented only using
- * `Promise.all` so it will work with any implementation of ES6 promises.
+ * AsyncIterable so it will work with any implementation of ES6 promises.
  */
 export function asyncIteratorForObject<T>(
   object: {[key: string]: mixed}
