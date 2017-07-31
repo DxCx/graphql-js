@@ -208,9 +208,17 @@ export function AsyncGeneratorFromObserver<T>(
 /**
  * Utility function used to convert all possible result types into AsyncIterator
  */
-export function toAsyncIterator(result: mixed): AsyncIterable<mixed> {
+/* eslint-disable no-redeclare */
+declare function toAsyncIterator<T>(
+  result: Array<mixed>
+): AsyncIterable<Array<mixed>>;
+declare function toAsyncIterator<T>(result: AsyncIterable<T>): AsyncIterable<T>;
+declare function toAsyncIterator<T>(result: Promise<T>): AsyncIterable<T>;
+declare function toAsyncIterator<T>(result: T): AsyncIterable<T>;
+declare function toAsyncIterator<T>(result: ?T): ?AsyncIterable<T>;
+export function toAsyncIterator(result) {
   if (result === undefined) {
-    return ((undefined: any): AsyncIterable<mixed>);
+    return undefined;
   }
 
   if (result === null) {
@@ -224,7 +232,7 @@ export function toAsyncIterator(result: mixed): AsyncIterable<mixed> {
   }
 
   if (isAsyncIterable(result)) {
-    return ((result: any): AsyncIterable<mixed>);
+    return result;
   }
 
   if (isPromise(result)) {
@@ -367,13 +375,13 @@ export function combineLatestAsyncIterator(
 /**
  * Utility function to concat asyncIterator results
  */
-export function concatAsyncIterator<T>(
+export function concatAsyncIterator<T, U>(
   iterable: AsyncIterable<T>,
-  concatCallback: (latestValue: ?T) => AsyncIterable<T> | T
-): AsyncIterable<T> {
+  concatCallback: (latestValue: T) => AsyncIterable<U> | U
+): AsyncIterable<U> {
   return AsyncGeneratorFromObserver(observer => {
     const iterator = getAsyncIterator(iterable);
-    let nextIterator: ?AsyncIterator<T>;
+    let nextIterator: ?AsyncIterator<U>;
     let latestValue: T;
     let firstCompleted = false;
     let valueEmitted = false;
@@ -389,7 +397,7 @@ export function concatAsyncIterator<T>(
         return;
       }
 
-      const next: AsyncIterable<T> | T = concatCallback(latestValue);
+      const next: AsyncIterable<U> | U = concatCallback(latestValue);
       nextIterator = getAsyncIterator(next);
       if ( nextIterator ) {
         nextCompleted = false;
@@ -401,7 +409,7 @@ export function concatAsyncIterator<T>(
         });
       }
 
-      observer.next(((next: any): T));
+      observer.next(((next: any): U));
     })
     .then(() => observer.complete(), e => observer.error(e));
 

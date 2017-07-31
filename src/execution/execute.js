@@ -304,7 +304,7 @@ function executeImpl(
   // be executed. An execution which encounters errors will still result in a
   // resolved Promise.
   return mapAsyncIterator(
-    executeOperation(context, context.operation, rootValue),
+    toAsyncIterator(executeOperation(context, context.operation, rootValue)),
     data => context.errors.length === 0 ?
       { data } :
       { errors: context.errors, data }
@@ -436,7 +436,7 @@ function executeOperation(
   exeContext: ExecutionContext,
   operation: OperationDefinitionNode,
   rootValue: mixed
-): AsyncIterable<mixed> {
+): ?{[key: string]: mixed} {
   const type = getOperationRootType(exeContext.schema, operation);
   const fields = collectFields(
     exeContext,
@@ -466,10 +466,10 @@ function executeOperation(
       });
     }
 
-    return toAsyncIterator(result);
+    return result;
   } catch (error) {
     exeContext.errors.push(error);
-    return toAsyncIterator(null);
+    return null;
   }
 }
 
@@ -548,7 +548,7 @@ function executeFieldsSerially(
       results[responseName] = result;
       return results;
     }),
-    ((toAsyncIterator({}): any): AsyncIterable<{[key: string]: mixed}>)
+    toAsyncIterator({})
   );
 }
 
@@ -1094,7 +1094,7 @@ function completeListValue(
   // where the list contains no Promises by avoiding creating another Promise.
   const itemType = returnType.ofType;
   let containsAsyncIterator = false;
-  const completedResults = [];
+  const completedResults: Array<mixed> = [];
   forEach((result: any), (item, index) => {
     // No need to modify the info object containing the path,
     // since from here on it is not ever accessed by resolver functions.
@@ -1160,8 +1160,7 @@ function completeAbstractValue(
       resolvedRuntimeType => toAsyncIterator(completeObjectValue(
         exeContext,
         ensureValidRuntimeType(
-          // XXX: Better to resolve properly without casting here.
-          ((resolvedRuntimeType: any): ?GraphQLObjectType | string),
+          resolvedRuntimeType,
           exeContext,
           returnType,
           fieldNodes,
