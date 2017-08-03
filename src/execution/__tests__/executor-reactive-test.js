@@ -7,6 +7,7 @@ import {
   GraphQLObjectType,
   GraphQLString,
   GraphQLInt,
+  GraphQLBoolean,
   GraphQLNonNull,
   GraphQLList,
 } from '../../type';
@@ -704,6 +705,51 @@ describe('ExecuteReactive: Reactive Directives', () => {
     const expected = [
         { data: { a: [ {_id: 1} ] } },
         { data: { a: [ {_id: 2}, {_id: 1} ] } },
+    ];
+
+    const results = await executeReactiveAsArray({
+      schema,
+      document: parse(doc),
+      rootValue,
+    });
+
+    expect(results).to.deep.equal(expected);
+  });
+
+  it('@live works for array fields', async () => {
+    const doc = `query Example {
+      a {
+        _id
+        live @live
+      }
+    }`;
+    const rootValue = {
+      a: createAsyncIterator([
+        [ { _id: 1, live: false } ],
+        [ { _id: 1, live: true }, { _id: 2, live: false } ],
+      ]),
+    };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          a: {
+            type: new GraphQLList(
+              new GraphQLObjectType({
+                name: 'User',
+                fields: {
+                  _id: { type: GraphQLInt },
+                  live: { type: GraphQLBoolean },
+                }
+              })
+            ),
+          },
+        },
+      }),
+    });
+    const expected = [
+        { data: { a: [ {_id: 1, live: false} ] } },
+        { data: { a: [ {_id: 1, live: true}, {_id: 2, live: false} ] } },
     ];
 
     const results = await executeReactiveAsArray({
