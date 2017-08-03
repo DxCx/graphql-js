@@ -119,6 +119,7 @@ export type ExecutionContext = {
   errors: Array<GraphQLError>;
 
   // GQL-Async: used to store static results on @live request
+  reactive: boolean,
   liveCache: {[key: string]: mixed};
   liveMap: {[key: string]: boolean};
 };
@@ -174,26 +175,28 @@ export function execute(
 ) {
   const args = arguments.length === 1 ? argsOrSchema : undefined;
   const result = args ?
-    executeReactive(
+    executeImpl(
       args.schema,
       args.document,
       args.rootValue,
       args.contextValue,
       args.variableValues,
       args.operationName,
-      args.fieldResolver
+      args.fieldResolver,
+      false,
     ) :
-    executeReactive(
+    executeImpl(
       argsOrSchema,
       document,
       rootValue,
       contextValue,
       variableValues,
       operationName,
-      fieldResolver
+      fieldResolver,
+      false,
     );
 
-  return result.next().then(v => {
+  return getAsyncIterator(result).next().then(v => {
     if ( typeof result.return === 'function' ) {
       return result.return().then(() => v.value);
     }
@@ -250,7 +253,8 @@ export function executeReactive(
       args.contextValue,
       args.variableValues,
       args.operationName,
-      args.fieldResolver
+      args.fieldResolver,
+      true,
     ) :
     executeImpl(
       schema,
@@ -259,7 +263,8 @@ export function executeReactive(
       contextValue,
       variableValues,
       operationName,
-      fieldResolver
+      fieldResolver,
+      true,
     );
 }
 
@@ -270,7 +275,8 @@ function executeImpl(
   contextValue,
   variableValues,
   operationName,
-  fieldResolver
+  fieldResolver,
+  reactive
 ) {
   // If arguments are missing or incorrect, throw an error.
   assertValidExecutionArguments(
@@ -292,6 +298,8 @@ function executeImpl(
       operationName,
       fieldResolver
     );
+
+    context.reactive = reactive;
   } catch (error) {
     return toAsyncIterator({ errors: [ error ] });
   }
@@ -424,6 +432,7 @@ export function buildExecutionContext(
     variableValues,
     liveCache: {},
     liveMap: {},
+    reactive: false,
     fieldResolver: fieldResolver || defaultFieldResolver,
     errors,
   };
@@ -1307,7 +1316,8 @@ function collectAndExecuteSubfields(
         selectionSet,
         subFieldNodes,
         visitedFragmentNames,
-        path
+        path,
+        isPathLive(exeContext, path),
       );
     }
   }
@@ -1441,19 +1451,20 @@ function resolveWithLive<TSource>(
     result = toAsyncIterator(result);
   }
 
-  // Store result for live if possible
-
-  // no need to store result if node isn't possibly live till the end.
-  // or parent is live itself. (not in liveCache)
+  // if this is live value, or parent is live (marked as live).
+  // we need to return the value untouched.
   if ( exeContext.liveMap[path] ) {
     return result;
   }
 
+  // if that's an asyncIterator, and it won't include live,
+  // take only first result and complete.
   const iterator = getAsyncIterator(result);
   if ( iterator && !selectionPossiblyHasLive(exeContext, fieldNodes[0]) ) {
     result = takeFirstAsyncIterator(iterator);
   }
 
+  // Cache response.
   exeContext.liveCache[path] = result;
   return result;
 }
@@ -1465,6 +1476,9 @@ function handleDeferDirective<T>(
   path: ResponsePath,
   result: AsyncIterable<T>,
 ): AsyncIterable<?T> {
+  if ( !exeContext.reactive ) {
+    return result;
+  }
 
   if ( !directives ) {
     return result;
@@ -1486,10 +1500,36 @@ function hasLiveDirective(
     .some(d => d.name.value === GraphQLLiveDirective.name);
 }
 
+function isPathLive(
+  exeContext: ExecutionContext,
+  path: ResponsePath
+): boolean {
+  if ( !exeContext.reactive ) {
+    return false;
+  }
+
+  const pathArr = responsePathAsArray(path);
+  while ( pathArr.length > 0 ) {
+    const pathStr = pathArr.join('.');
+
+    if ( exeContext.liveMap[pathStr] ) {
+      return true;
+    }
+
+    pathArr.pop();
+  }
+
+  return false;
+}
+
 function selectionPossiblyHasLive(
   exeContext: ExecutionContext,
   selection: SelectionNode,
 ) {
+  if ( !exeContext.reactive ) {
+    return false;
+  }
+
   if ( hasLiveDirective(selection.directives) ) {
     return true;
   }
