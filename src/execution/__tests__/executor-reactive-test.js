@@ -8,6 +8,7 @@ import {
   GraphQLString,
   GraphQLInt,
   GraphQLNonNull,
+  GraphQLList,
 } from '../../type';
 import { createAsyncIterator } from 'iterall';
 
@@ -660,6 +661,49 @@ describe('ExecuteReactive: Reactive Directives', () => {
         { data: { a: { firstName: 'test', counter: 1 } } },
         { data: { a: { firstName: 'test', counter: 2 } } },
         { data: { a: { firstName: 'test', counter: 3 } } },
+    ];
+
+    const results = await executeReactiveAsArray({
+      schema,
+      document: parse(doc),
+      rootValue,
+    });
+
+    expect(results).to.deep.equal(expected);
+  });
+
+  it('@live works for arrays', async () => {
+    const doc = `query Example {
+      a @live {
+        _id
+      }
+    }`;
+    const rootValue = {
+      a: createAsyncIterator([
+        [ { _id: 1 } ],
+        [ { _id: 2 }, { _id: 1 } ],
+      ]),
+    };
+    const schema = new GraphQLSchema({
+      query: new GraphQLObjectType({
+        name: 'QueryType',
+        fields: {
+          a: {
+            type: new GraphQLList(
+              new GraphQLObjectType({
+                name: 'User',
+                fields: {
+                  _id: { type: GraphQLInt },
+                }
+              })
+            ),
+          },
+        },
+      }),
+    });
+    const expected = [
+        { data: { a: [ {_id: 1} ] } },
+        { data: { a: [ {_id: 2}, {_id: 1} ] } },
     ];
 
     const results = await executeReactiveAsArray({
