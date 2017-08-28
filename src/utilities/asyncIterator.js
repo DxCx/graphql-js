@@ -577,21 +577,29 @@ export function switchMapAsyncIterator<T, U>(
   return AsyncGeneratorFromObserver(observer => {
     const iterator = getAsyncIterator(iterable);
     let outerValue:IteratorResult<T, void>;
+    let $return;
+    let innerDone = true;
+    let outerDone = false;
 
     iterator.next().then(initialValue => {
       outerValue = initialValue;
       const next = () => {
         if ( outerValue.done ) {
+          outerDone = true;
           return;
         }
 
         const switchMapResult = switchMapCallback(outerValue.value);
         const inner = getAsyncIterator(switchMapResult);
-
-        let $return = () => ITER_DONE;
-        if (typeof inner.return === 'function') {
-          $return = inner.return;
+        if ( !inner ) {
+          throw new Error('Expected Async iterator from switchMap callback');
         }
+
+        $return = () => ITER_DONE;
+        if (typeof inner.return === 'function') {
+          $return = inner.return.bind(inner);
+        }
+        innerDone = false;
 
         let nextPromise;
 
@@ -609,6 +617,8 @@ export function switchMapAsyncIterator<T, U>(
             .then(result => {
               if ( !result.done ) {
                 observer.next(result.value);
+              } else {
+                innerDone = true;
               }
 
               return result;
@@ -636,8 +646,14 @@ export function switchMapAsyncIterator<T, U>(
     .then(() => observer.complete(), e => observer.error(e));
 
     return () => {
-      if ( iterator && typeof iterator.return === 'function' ) {
+      if ( !innerDone ) {
+        $return();
+        innerDone = true;
+      }
+
+      if ( !outerDone && iterator && typeof iterator.return === 'function' ) {
         iterator.return();
+        outerDone = true;
       }
     };
   });
