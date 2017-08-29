@@ -285,15 +285,17 @@ export function toAsyncIterator(result) {
   return createAsyncIterator([ result ]);
 }
 
-function safePromiseRace<T>(pArr: Array<Promise<T>>): Promise<{
-  i: number, value: T
-}> {
+function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
   if ( pArr.length === 0 ) {
     return Promise.reject(new Error('Cannot Race with zero Promises'));
   }
   const racePromises = pArr.map((p, i) => p.then(value => ({ i, value })));
 
-  return Promise.race(racePromises);
+  return Promise.race(racePromises).then(({i, value }) => {
+    // Cleanup the finished one.
+    pArr.splice(i, 1);
+    return value;
+  });
 }
 
 /**
@@ -326,7 +328,6 @@ export function combineLatestAsyncIterator(
       iter.done = false;
       return iter;
     });
-    let doneIterators = 0;
 
     // The state for this combination.
     const state = [];
@@ -341,23 +342,22 @@ export function combineLatestAsyncIterator(
       const p = iter.next().then(({value, done}) => {
         if (done) {
           iter.done = true;
-          doneIterators += 1;
           return ITER_DONE;
         }
 
         state[i] = value;
-        return iteratorResult([ ...state ]);
+        return iteratorResult({ value: [ ...state ], i });
       });
 
       return p;
     }
 
     // Generate next Iteration.
-    function getNext() {
+    function getAllNextPromises() {
       return ((allIterators
         .map((iter, i) => getNextPromise(i))
         .filter(v => v !== null): any): Array<Promise<
-          IteratorResult<Array<mixed>, void>
+          IteratorResult<{ i: number, value: Array<mixed> }, void>
         >>);
     }
 
@@ -367,9 +367,9 @@ export function combineLatestAsyncIterator(
       let stateLatest = [];
 
       return Promise.all(
-        getNext().map(p => p.then(stateNow => {
+        getAllNextPromises().map(p => p.then(stateNow => {
           if ( !stateNow.done ) {
-            stateLatest = stateNow.value;
+            stateLatest = stateNow.value.value;
           }
           return stateNow;
         }))
@@ -377,29 +377,28 @@ export function combineLatestAsyncIterator(
     }
 
     // Yield latest state for each changing state.
-    function nextValues() {
-      const nextPromises = getNext();
+    function combineIterators() {
+      const nextPromises = getAllNextPromises();
+
       const next = () => {
         if ( nextPromises.length === 0 ) {
           return Promise.resolve();
         }
 
-        return safePromiseRace(nextPromises)
-        .then(({i, value }) => {
-          const repPromise = getNextPromise(i);
-          if ( repPromise === null ) {
-            // Cleanup the finished one.
-            nextPromises.splice(i, 1);
-          } else {
-            nextPromises[i] = repPromise;
+        return promiseRaceWithCleanup(nextPromises)
+        .then(res => {
+          if ( res.done ) {
+            return;
           }
 
-          return value;
-        })
-        .then(res => {
-          if ( !res.done ) {
-            observer.next(res.value);
+          // Pulling next promise
+          const repPromise = getNextPromise(res.value.i);
+          if ( repPromise !== null ) {
+            nextPromises.push(repPromise);
           }
+
+          // Emitting current result
+          observer.next(res.value.value);
         }).then(next);
       };
 
@@ -410,15 +409,8 @@ export function combineLatestAsyncIterator(
     getFirstState().then(initialState => {
       observer.next(initialState);
 
-      const next = () => {
-        if ( doneIterators >= allIterators.length ) {
-          return;
-        }
-
-        return nextValues().then(next);
-      };
-
-      return next();
+      // Then combine each change.
+      return combineIterators();
     })
     .then(() => observer.complete(), e => observer.error(e));
 
