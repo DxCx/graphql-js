@@ -285,17 +285,15 @@ export function toAsyncIterator(result) {
   return createAsyncIterator([ result ]);
 }
 
-function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
+function safePromiseRace<T>(pArr: Array<Promise<T>>): Promise<{
+  i: number, value: T
+}> {
   if ( pArr.length === 0 ) {
     return Promise.reject(new Error('Cannot Race with zero Promises'));
   }
   const racePromises = pArr.map((p, i) => p.then(value => ({ i, value })));
 
-  return Promise.race(racePromises).then(({i, value }) => {
-    // Cleanup the finished one.
-    pArr.splice(i, 1);
-    return value;
-  });
+  return Promise.race(racePromises);
 }
 
 /**
@@ -333,27 +331,31 @@ export function combineLatestAsyncIterator(
     // The state for this combination.
     const state = [];
 
+    function getNextPromise(i) {
+      const iter = allIterators[i];
+
+      if (iter.done) {
+        return null;
+      }
+
+      const p = iter.next().then(({value, done}) => {
+        if (done) {
+          iter.done = true;
+          doneIterators += 1;
+          return ITER_DONE;
+        }
+
+        state[i] = value;
+        return iteratorResult([ ...state ]);
+      });
+
+      return p;
+    }
+
     // Generate next Iteration.
     function getNext() {
       return ((allIterators
-        .map((iter, i) => {
-          if (iter.done) {
-            return null;
-          }
-
-          const p = iter.next().then(({value, done}) => {
-              if (done) {
-                iter.done = true;
-                doneIterators += 1;
-                return ITER_DONE;
-              }
-
-              state[i] = value;
-              return iteratorResult([ ...state ]);
-            });
-
-          return p;
-        })
+        .map((iter, i) => getNextPromise(i))
         .filter(v => v !== null): any): Array<Promise<
           IteratorResult<Array<mixed>, void>
         >>);
@@ -382,7 +384,18 @@ export function combineLatestAsyncIterator(
           return Promise.resolve();
         }
 
-        return promiseRaceWithCleanup(nextPromises)
+        return safePromiseRace(nextPromises)
+        .then(({i, value }) => {
+          const repPromise = getNextPromise(i);
+          if ( repPromise === null ) {
+            // Cleanup the finished one.
+            nextPromises.splice(i, 1);
+          } else {
+            nextPromises[i] = repPromise;
+          }
+
+          return value;
+        })
         .then(res => {
           if ( !res.done ) {
             observer.next(res.value);
