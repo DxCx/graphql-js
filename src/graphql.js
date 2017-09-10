@@ -151,7 +151,7 @@ declare function graphqlReactive({|
   variableValues?: ?{[key: string]: mixed},
   operationName?: ?string,
   fieldResolver?: ?GraphQLFieldResolver<any, any>
-|}, ..._: []): AsyncIterator<ExecutionResult>;
+|}, ..._: []): Promise<AsyncIterator<ExecutionResult>>;
 /* eslint-disable no-redeclare */
 declare function graphqlReactive(
   schema: GraphQLSchema,
@@ -161,7 +161,7 @@ declare function graphqlReactive(
   variableValues?: ?{[key: string]: mixed},
   operationName?: ?string,
   fieldResolver?: ?GraphQLFieldResolver<any, any>
-): AsyncIterator<ExecutionResult>;
+): Promise<AsyncIterator<ExecutionResult>>;
 export function graphqlReactive(
   argsOrSchema,
   source,
@@ -210,13 +210,17 @@ function graphqlImpl(
   try {
     document = parse(source);
   } catch (syntaxError) {
-    return createAsyncIterator([ { errors: [ syntaxError ]} ]);
+    return Promise.resolve(createAsyncIterator(
+      ([ { errors: [ syntaxError ]} ]: Iterable<ExecutionResult>)
+    ));
   }
 
   // Validate
   const validationErrors = validate(schema, document, specifiedRules);
   if (validationErrors.length > 0) {
-    return createAsyncIterator([ { errors: validationErrors } ]);
+    return Promise.resolve(createAsyncIterator(
+      ([ { errors: validationErrors } ]: Iterable<ExecutionResult>)
+    ));
   }
 
   const operation = getOperationAST(document, operationName);
@@ -225,7 +229,7 @@ function graphqlImpl(
     operation.operation === 'subscription';
   const executor = isSubscription ? subscribe : executeReactive;
 
-  return executor(
+  return Promise.resolve(executor(
     schema,
     document,
     rootValue,
@@ -233,5 +237,5 @@ function graphqlImpl(
     variableValues,
     operationName,
     fieldResolver
-  );
+  ));
 }

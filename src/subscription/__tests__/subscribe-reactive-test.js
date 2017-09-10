@@ -15,7 +15,7 @@ import {
 } from '../../type';
 
 async function subscribeAsArray(params, limit, timeout) {
-  const iter = subscribe(params);
+  const iter = await subscribe(params);
   const responses = [];
   const infiateLoop = true;
 

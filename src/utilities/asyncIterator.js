@@ -16,7 +16,7 @@ const ITER_DONE = Promise.resolve({
  * Given an AsyncIterable and a callback function, return an AsyncIterator
  * which produces values mapped via calling the callback function.
  */
-export default function mapAsyncIterator<T, U>(
+export function mapAsyncIterator<T, U>(
   iterable: AsyncIterable<T>,
   callback: T => Promise<U> | U,
   rejectCallback?: any => Promise<U> | U
@@ -154,7 +154,7 @@ export function AsyncGeneratorFromObserver<T>(
   let cleanupFunction: ?(() => void);
   const generator: AsyncGeneratorFromObserverFunction<T> = generatorFunction;
 
-  return {
+  return ({
     next() {
       if ( !done && !cleanupFunction ) {
         this._invoke();
@@ -240,6 +240,8 @@ export function AsyncGeneratorFromObserver<T>(
           } else {
             completedPromises.push(Promise.reject(error));
           }
+
+          this._cleanup(ITER_DONE);
         },
         complete: () => {
           if ( done ) {
@@ -251,7 +253,7 @@ export function AsyncGeneratorFromObserver<T>(
         },
       });
     }
-  };
+  }: any);
 }
 
 /**
@@ -271,7 +273,9 @@ export function toAsyncIterator(result) {
   }
 
   if (result === null) {
-    return createAsyncIterator([ null ]);
+    return createAsyncIterator(
+      ([ null ]: Iterable<null>)
+    );
   }
 
   if (Array.isArray(result) && (objectContainsAsyncIterator(result) === true)) {
@@ -285,7 +289,9 @@ export function toAsyncIterator(result) {
   }
 
   if (isPromise(result)) {
-    return createAsyncIterator([ result ]);
+    return createAsyncIterator(
+      ([ result ]: Iterable<Promise<mixed>>)
+    );
   }
 
   if ((!Array.isArray(result)) &&
@@ -294,7 +300,9 @@ export function toAsyncIterator(result) {
     return asyncIteratorForObject((result: {[key: string]: mixed}));
   }
 
-  return createAsyncIterator([ result ]);
+  return createAsyncIterator(
+    ([ result ]: Iterable<mixed>)
+  );
 }
 
 function promiseRaceWithCleanup<T>(pArr: Array<Promise<T>>): Promise<T> {
@@ -514,15 +522,20 @@ export function takeFirstAsyncIterator<T>(
     const iterator = getAsyncIterator(iterable);
 
     iterator.next().then(({ done, value }) => {
-      if ( !done ) {
-        let $return = Promise.resolve();
-        if ( typeof iterator.return === 'function' ) {
-          $return = Promise.resolve(iterator.return());
-        }
-        observer.next($return.then(() => value));
+      if ( done ) {
+        return;
       }
-      observer.complete();
-    }, e => observer.error(e));
+
+      let $return = Promise.resolve();
+      if ( typeof iterator.return === 'function' ) {
+        $return = Promise.resolve(iterator.return());
+      }
+
+      return $return
+        .then(() => value)
+        .then(v => observer.next(v));
+    })
+    .then(() => observer.complete(), e => observer.error(e));
 
     return () => {
       // No way to cancel promises...
@@ -538,7 +551,7 @@ export function takeFirstAsyncIterator<T>(
  */
 export function catchErrorsAsyncIterator<T>(
   iterable: AsyncIterable<T>,
-  errorHandler: (error: any) => Error | AsyncIterable<T>
+  errorHandler: (error: any) => Error | T | AsyncIterable<T>
 ): AsyncIterable<T> {
   return AsyncGeneratorFromObserver(observer => {
     let iterator = getAsyncIterator(iterable);
@@ -554,15 +567,19 @@ export function catchErrorsAsyncIterator<T>(
       }
 
       return $return.then(() => errorHandler(e))
-        .then((err: Error | AsyncIterable<T>) => {
+        .then((err: Error | T | AsyncIterable<T>) => {
           iterator = ((getAsyncIterator(err): any): ?AsyncIterator<T>);
-          if ( !iterator ) {
+          if ( iterator ) {
+            return forAwaitEach(iterator, value => {
+              observer.next(value);
+            });
+          }
+
+          if ( err instanceof Error ) {
             throw err;
           }
 
-          return forAwaitEach(iterator, value => {
-            observer.next(value);
-          });
+          observer.next(((err: any): T));
         })
         .then(() => observer.complete(), e2 => observer.error(e2));
     });

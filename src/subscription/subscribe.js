@@ -26,7 +26,10 @@ import {
 } from '../execution/execute';
 import { GraphQLSchema } from '../type/schema';
 import invariant from '../jsutils/invariant';
-import { switchMapAsyncIterator } from '../utilities/asyncIterator';
+import {
+  switchMapAsyncIterator,
+  catchErrorsAsyncIterator,
+} from '../utilities/asyncIterator';
 
 import type { ExecutionResult } from '../execution/execute';
 import type { DocumentNode } from '../language/ast';
@@ -162,7 +165,7 @@ function subscribeImpl(
   // ExecutionResult value as described above.
   return sourcePromise.then(
     sourceStream => switchMapAsyncIterator(
-      sourceStream,
+      catchErrorsAsyncIterator(sourceStream, reportGraphQLError),
       mapSourceToResponse,
     ),
     reportGraphQLError
