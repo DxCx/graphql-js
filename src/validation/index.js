@@ -140,3 +140,8 @@ export {
 export {
   VariablesInAllowedPosition as VariablesInAllowedPositionRule
 } from './rules/VariablesInAllowedPosition';
+
+// Reactive-Directives: Should not allow reactive support for mutations.
+export {
+  NoReactiveMutations as NoReactiveMutationsRule
+} from './rules/NoReactiveMutations';
